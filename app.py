@@ -7,6 +7,30 @@ from datetime import datetime
 from pdf2image import convert_from_bytes
 import pytesseract
 
+# ========== PASSWORD GATE ==========
+def check_password():
+    def password_entered():
+        # Check against the secret we saved in Streamlit
+        if st.session_state["password"] == st.secrets["password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if "password_correct" not in st.session_state:
+        st.title("🔒 Smart Statement Reader")
+        st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
+        st.caption("This app is private. Contact owner for access.")
+        st.stop()
+    elif not st.session_state["password_correct"]:
+        st.title("🔒 Smart Statement Reader")
+        st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
+        st.error("😕 Password incorrect")
+        st.stop()
+# ========== END PASSWORD GATE ==========
+
+check_password()
+
 st.set_page_config(page_title="Smart Statement Reader", layout="wide")
 st.title("📄 Smart Statement Reader - M-PESA + Bank")
 st.write("Upload your M-PESA PDF, CSV or Excel statement to auto-categorize everything")
