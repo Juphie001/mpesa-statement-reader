@@ -10,7 +10,6 @@ import pytesseract
 # ========== PASSWORD GATE ==========
 def check_password():
     def password_entered():
-        # Check against the secret we saved in Streamlit
         if st.session_state["password"] == st.secrets["password"]:
             st.session_state["password_correct"] = True
             del st.session_state["password"]
@@ -39,102 +38,49 @@ uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=[
 
 def clean_amount(x):
     try:
-        return float(str(x).replace(",","").replace("-","-").replace("KES","").strip())
+        return float(str(x).replace(",","").replace("KES","").strip())
     except:
         return 0.0
 
 def clean_details(d):
-    # Remove "Completed-200.00" and other junk from end of details
-    d = re.sub(r'completed[-\s]*[\d,]+\.?\d*', '', d, flags=re.IGNORECASE)
+    d = re.sub(r'completed[-\s]*[\d,]+\.?\d*', '', str(d), flags=re.IGNORECASE)
     return d.strip()
 
-def categorize(details, amount, txid_group):
-    raw_d = str(details) # KEEP RAW
-    d = clean_details(raw_d).lower() # CLEANED
+def categorize(details, txid_group):
+    d = clean_details(details).lower()
     has_fuliza = txid_group.get('has_fuliza', False) or 'fuliza' in d or 'overdraft' in d
-    is_od_repayment = 'od loan' in d or 'repayment' in d
 
-    if is_od_repayment: return 'Fuliza Repayment'
-    if d == "": return 'Fuliza Repayment'
-
-    # FIX: CATCH BUSINESS PAYMENT FROM BANK VIA API + TYPO
-    if 'bank' in raw_d.lower() and re.search(r'business payment fr', raw_d, re.IGNORECASE) and 'api' in raw_d.lower():
+    if 'od loan' in d or 'repayment' in d or d == "": return 'Fuliza Repayment'
+    if 'bank' in d and re.search(r'business payment fr', details, re.IGNORECASE) and 'api' in d:
         return 'Business Payment Received - Fuliza' if has_fuliza else 'Business Payment Received'
-
     if 'airtime' in d: return 'Airtime - Fuliza' if has_fuliza else 'Airtime'
-
-    # CHECK TILL FULIZA FIRST
-    if has_fuliza and ('merchant payment' in d or 'buy goods' in d or 'customer payment to small' in d):
-        return 'Till Payment - Fuliza'
-    if 'customer payment to small' in d or 'merchant payment' in d or 'buy goods' in d:
-        return 'Till Payment'
-
-    if 'overdraft' in d and 'credit party' in d and amount > 0: return 'Fuliza Borrowed'
+    if has_fuliza and ('merchant payment' in d or 'buy goods' in d or 'customer payment to small' in d): return 'Till Payment - Fuliza'
+    if 'customer payment to small' in d or 'merchant payment' in d or 'buy goods' in d: return 'Till Payment'
+    if 'overdraft' in d and 'credit party' in d: return 'Fuliza Borrowed'
     if has_fuliza and ('charge' in d or 'fee' in d):
         if 'withdraw' in d: return 'Withdrawal Charge - Fuliza'
         return 'Fuliza Interest/Charges'
-
-    # Business Payment Sent - ADDED MORE MATCHES
-    if ('small business' in d and 'pay merchant' in d) or ('small business' in d and 'pay to' in d) or ('small business payment to' in d):
-        return 'Business Payment Sent - Fuliza' if has_fuliza else 'Business Payment Sent'
-
-    # Business Payment Received - Customers paying you
-    if 'micro sme business' in d or 'customer send money to micro' in d or 'Business Payment from' in d or ('small business' in d and 'payment to customer' in d):
-        return 'Business Payment Received - Fuliza' if has_fuliza else 'Business Payment Received'
-
+    if ('small business' in d and 'pay merchant' in d) or ('small business' in d and 'pay to' in d): return 'Business Payment Sent - Fuliza' if has_fuliza else 'Business Payment Sent'
+    if 'micro sme business' in d or 'customer send money to micro' in d or ('small business' in d and 'payment to customer' in d): return 'Business Payment Received - Fuliza' if has_fuliza else 'Business Payment Received'
     if 'lipa na mpesa business' in d or 'business to business' in d or 'b2b' in d: return 'Business to Business - Fuliza' if has_fuliza else 'Business to Business'
-    if 'business withdrawal' in d or 'withdrawal to business' in d: return 'Business Withdrawal - Fuliza' if has_fuliza else 'Business Withdrawal'
-
+    if 'business withdrawal' in d: return 'Business Withdrawal - Fuliza' if has_fuliza else 'Business Withdrawal'
     if 'withdraw' in d and 'agent' in d: return 'Agent Withdrawal - Fuliza' if has_fuliza else 'Agent Withdrawal'
-    if 'customer withdrawal at agent' in d: return 'Agent Withdrawal - Fuliza' if has_fuliza else 'Agent Withdrawal'
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit - Fuliza' if has_fuliza else 'Agent Deposit'
-
     if 'payment to customer' in d and 'business' not in d: return 'Sent to Person - Fuliza' if has_fuliza else 'Sent to Person'
     if 'received from' in d or 'funds received from' in d: return 'Received from Person - Fuliza' if has_fuliza else 'Received from Person'
     if 'pay bill' in d: return 'Paybill - Fuliza' if has_fuliza else 'Paybill'
-
     if has_fuliza: return 'Fuliza Borrowed'
     if 'deposit' in d and 'agent' not in d: return 'Bank Deposit'
     return 'Other'
 
-def get_in_out(details, amount, txid_group):
-    raw_d = str(details) # KEEP RAW
-    d = clean_details(details).lower() # CLEANED
-    abs_amount = abs(amount)
-
-    if 'od loan' in d or 'repayment' in d: return 0, abs_amount
-    if d == "":
-        match_amt = re.search(r'completed[-\s]*([\d,]+\.?\d*)', raw_d, re.IGNORECASE)
-        if match_amt: return 0, clean_amount(match_amt.group(1))
-        return 0, abs_amount
-
-    # FIX: CATCH BUSINESS PAYMENT FROM BANK VIA API + TYPO
-    if 'bank' in raw_d.lower() and re.search(r'business payment fr', raw_d, re.IGNORECASE) and 'api' in raw_d.lower():
-        return abs_amount, 0
-
-    if 'airtime' in d:
-        return 0, abs_amount
-
-    has_fuliza = txid_group.get('has_fuliza', False) or 'fuliza' in d or 'overdraft' in d
-
-    if has_fuliza and ('charge' in d or 'fee' in d): return 0, abs_amount
-    if 'overdraft' in d and 'credit party' in d and amount > 0: return abs_amount, 0
-    if has_fuliza and amount < 0: return 0, abs_amount
-
-    # Business Payment Sent = Money OUT - FORCE IT
-    if ('small business' in d and 'pay merchant' in d) or ('small business' in d and 'pay to' in d) or ('small business payment to' in d):
-        return 0, abs_amount
-
-    # Business Payment Received = Money IN
-    if 'micro sme business' in d or 'customer send money to micro' in d or ('small business' in d and 'payment to customer' in d):
-        return abs_amount, 0
-
-    if 'received from' in d or 'funds received from' in d: return abs_amount, 0
-    if 'payment to customer' in d and 'business' not in d: return 0, abs_amount
-    if 'withdraw' in d and 'agent' in d: return 0, abs_amount
-    if 'deposit' in d and 'agent' in d: return abs_amount, 0
-
-    return amount if amount > 0 else 0, abs_amount if amount < 0 else 0
+def get_in_out(amount):
+    # NEW RULE: TRUST THE SIGN
+    if amount < 0:
+        return 0.0, abs(amount) # Withdrawn
+    elif amount > 0:
+        return amount, 0.0 # Paid In
+    else:
+        return 0.0, 0.0
 
 def parse_mpesa_text(full_text):
     data = []
@@ -144,15 +90,13 @@ def parse_mpesa_text(full_text):
 
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
+        if not line: continue
         buffer += " " + line
-
         match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+?)\s+([\-\d,]+\.?\d*)\s+([\d,]+\.?\d*)$', buffer)
         if match:
             txid = match.group(1)
             dt = f"{match.group(2)} {match.group(3)}"
-            details = match.group(4).strip() # DON'T CLEAN HERE, WE CLEAN IN FUNCTIONS
+            details = match.group(4).strip()
             amount = clean_amount(match.group(5))
             key = f"{txid}_{dt}"
             raw_transactions.append({'key': key, 'txid': txid, 'dt': dt, 'details': details, 'amount': amount})
@@ -160,9 +104,7 @@ def parse_mpesa_text(full_text):
 
     txid_groups = {}
     for t in raw_transactions:
-        if t['key'] not in txid_groups:
-            txid_groups[t['key']] = []
-        txid_groups[t['key']].append(t)
+        txid_groups.setdefault(t['key'], []).append(t)
 
     for key, items in txid_groups.items():
         dt = items[0]['dt']
@@ -170,29 +112,23 @@ def parse_mpesa_text(full_text):
         has_fuliza = any('fuliza' in i['details'].lower() or 'overdraft' in i['details'].lower() for i in items)
         group = {'has_fuliza': has_fuliza}
 
+        # Special case: Fuliza multi-line tx: Borrow + Withdraw + Charge
         has_borrow = any('overdraft' in i['details'].lower() and 'credit party' in i['details'].lower() for i in items)
         has_withdraw = any('withdraw' in i['details'].lower() and 'agent' in i['details'].lower() for i in items)
         has_charge = any('charge' in i['details'].lower() for i in items)
 
         if has_borrow and has_withdraw:
-            borrow_amt = max([abs(i['amount']) for i in items if 'overdraft' in i['details'].lower()] or [0])
-            withdraw_amt = max([abs(i['amount']) for i in items if 'withdraw' in i['details'].lower() and 'agent' in i['details'].lower()] or [0])
-            charge_amt = max([abs(i['amount']) for i in items if 'charge' in i['details'].lower()] or [0])
-
-            if borrow_amt > 0:
-                data.append([dt, f"{txid} | Fuliza Borrowed", borrow_amt, 0, 'Fuliza Borrowed', "M-PESA"])
-            if withdraw_amt > 0:
-                data.append([dt, f"{txid} | Agent Withdrawal with Fuliza", 0, withdraw_amt, 'Agent Withdrawal - Fuliza', "M-PESA"])
-            if charge_amt > 0:
-                data.append([dt, f"{txid} | Withdrawal Charge", 0, charge_amt, 'Withdrawal Charge - Fuliza', "M-PESA"])
+            for i in items:
+                paid_in, withdrawn = get_in_out(i['amount'])
+                cat = categorize(i['details'], group)
+                data.append([dt, f"{txid} | {clean_details(i['details'])}", paid_in, withdrawn, cat, "M-PESA"])
             continue
 
-        combined_details = f"{txid} | {' | '.join([i['details'] for i in items])}"
-        amounts = [abs(i['amount']) for i in items]
-        total_amount = max(amounts) if amounts else 0.0
-
-        cat = categorize(combined_details, total_amount, group)
-        paid_in, withdrawn = get_in_out(combined_details, total_amount, group)
+        combined_details = f"{txid} | {' | '.join([clean_details(i['details']) for i in items])}"
+        # Use the biggest amount in the group as the main amount
+        main_amount = max([i['amount'] for i in items], key=abs) if items else 0.0
+        cat = categorize(combined_details, group)
+        paid_in, withdrawn = get_in_out(main_amount)
         data.append([dt, combined_details, paid_in, withdrawn, cat, "M-PESA"])
 
     return data
@@ -206,11 +142,11 @@ if uploaded_file:
             df_raw = pd.read_csv(uploaded_file) if file_type == 'csv' else pd.read_excel(uploaded_file)
             st.info("Detected: M-PESA Excel/CSV Statement")
             for _, row in df_raw.iterrows():
-                details = str(row.get('Details', '')) # DON'T CLEAN HERE
+                details = str(row.get('Details', ''))
                 raw_amount = clean_amount(row.get('Amount', clean_amount(row.get('Paid In', 0)) - clean_amount(row.get('Withdrawn', 0))))
                 group = {'has_fuliza': 'fuliza' in details.lower() or 'overdraft' in details.lower()}
-                cat = categorize(details, raw_amount, group)
-                paid_in, withdrawn = get_in_out(details, raw_amount, group)
+                cat = categorize(details, group)
+                paid_in, withdrawn = get_in_out(raw_amount)
                 data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
         else:
             file_bytes = uploaded_file.getvalue()
@@ -222,21 +158,22 @@ if uploaded_file:
                 with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                     for i, page in enumerate(pdf.pages):
                         text = page.extract_text()
-                        if text:
-                            full_text += "\n" + text
+                        if text: full_text += "\n" + text
                     pdf_read_ok = True
             except Exception as e:
                 st.warning(f"pdfplumber failed: {type(e).__name__}. Switching to OCR...")
 
             if not pdf_read_ok or len(full_text.strip()) < 50:
-                st.info("Running full OCR on PDF... this takes ~30s")
-                images = convert_from_bytes(file_bytes, dpi=300)
-                for i, image in enumerate(images):
-                    st.write(f"OCR Page {i+1}/{len(images)}...")
-                    text = pytesseract.image_to_string(image)
-                    if text:
-                        full_text += "\n" + text
-
+                try:
+                    st.info("Running full OCR on PDF... this takes ~30s")
+                    images = convert_from_bytes(file_bytes, dpi=200)
+                    for i, image in enumerate(images):
+                        st.write(f"OCR Page {i+1}/{len(images)}...")
+                        text = pytesseract.image_to_string(image)
+                        if text: full_text += "\n" + text
+                except Exception as e:
+                    st.error("OCR failed. Add `packages.txt` with `poppler-utils` and `tesseract-ocr` to your repo")
+                    st.stop()
             data = parse_mpesa_text(full_text)
 
     if not data:
@@ -253,13 +190,14 @@ if uploaded_file:
     col3.metric("📊 Net", f"KES {df['Paid In'].sum() - df['Withdrawn'].sum():,.2f}")
     col4.metric("📑 Transactions", len(df))
 
+    # Metrics
     fuliza_borrowed = df[df['Category']=='Fuliza Borrowed']['Paid In'].sum()
     till_fuliza = df[df['Category']=='Till Payment - Fuliza']['Withdrawn'].sum()
     fuliza_repaid = df[df['Category']=='Fuliza Repayment']['Withdrawn'].sum()
     agent_fuliza = df[df['Category']=='Agent Withdrawal - Fuliza']['Withdrawn'].sum()
     withdrawal_charges = df[df['Category']=='Withdrawal Charge - Fuliza']['Withdrawn'].sum()
-    business_received = df[df['Category']=='Business Payment Received']['Paid In'].sum()
-    business_sent = df[df['Category']=='Business Payment Sent']['Withdrawn'].sum()
+    business_received = df[df['Category'].str.contains('Business Payment Received')]['Paid In'].sum()
+    business_sent = df[df['Category'].str.contains('Business Payment Sent')]['Withdrawn'].sum()
     airtime_spent = df[df['Category'].str.contains('Airtime')]['Withdrawn'].sum()
 
     col5, col6, col7, col8 = st.columns(4)
@@ -285,8 +223,7 @@ if uploaded_file:
     st.divider()
     st.subheader("📑 All Transactions")
     col1, col2, col3 = st.columns(3)
-    with col1:
-        search = st.text_input("🔍 Search Details", placeholder="TXID, Name, Phone, Fuliza...")
+    with col1: search = st.text_input("🔍 Search Details")
     with col2:
         cats = sorted(df['Category'].unique(), key=lambda x: (not 'Fuliza' in x, x))
         cat_filter = st.multiselect("Filter by Category", options=cats, default=[])
@@ -295,16 +232,12 @@ if uploaded_file:
             min_date = df['Date'].min().date()
             max_date = df['Date'].max().date()
             date_range = st.date_input("Date Range", [min_date, max_date])
-        else:
-            date_range = []
+        else: date_range = []
 
     df_filtered = df.copy()
-    if search:
-        df_filtered = df_filtered[df_filtered['Details'].str.contains(search, case=False, na=False)]
-    if cat_filter:
-        df_filtered = df_filtered[df_filtered['Category'].isin(cat_filter)]
-    if len(date_range) == 2:
-        df_filtered = df_filtered[(df_filtered['Date'].dt.date >= date_range[0]) & (df_filtered['Date'].dt.date <= date_range[1])]
+    if search: df_filtered = df_filtered[df_filtered['Details'].str.contains(search, case=False, na=False)]
+    if cat_filter: df_filtered = df_filtered[df_filtered['Category'].isin(cat_filter)]
+    if len(date_range) == 2: df_filtered = df_filtered[(df_filtered['Date'].dt.date >= date_range[0]) & (df_filtered['Date'].dt.date <= date_range[1])]
 
     st.write(f"Showing **{len(df_filtered)}** of **{len(df)}** transactions")
     st.dataframe(df_filtered.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
