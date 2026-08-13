@@ -31,8 +31,8 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.1")
-st.caption("Fixed: All B2C API 'Payment From' now = Loan Disbursement")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.6")
+st.caption("Fixed: Loan Taken + Loan Repaid with Fuliza")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -50,18 +50,18 @@ def categorize(details, txid_group):
     # ===== LOAN KEYWORDS =====
     loan_keywords = ['loan', 'promotion payment', 'disbursement', 'facility', 'credit']
     bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa', 'simplepay', 'eclof', 'tala', 'branch', 'fairmoney', 'okash', 'kopa']
-    b2c_api = 'via api' in d and 'original conversation id' in d
+    b2c_api = ('via api' in d and 'original conversation id' in d) or ('via api' in d and 'conversation id' in d)
     # =========================
 
     # 1. LOAN DISBURSEMENT = Money coming IN
-    # Rule A: Has loan word + B2C API
     if any(k in d for k in loan_keywords) and b2c_api:
         return 'Loan Disbursement'
-    # Rule B: From known bank/loan company + B2C API + "payment from"
     if any(bank in d for bank in bank_loan_senders) and 'payment from' in d and b2c_api:
         return 'Loan Disbursement'
-    # Rule C: ANY B2C API "Payment From" - catch the rest
     if 'payment from' in d and b2c_api and not 'business payment fr' in d:
+        return 'Loan Disbursement'
+    # Rule D: Catch banks even if API text split across lines
+    if any(bank in d for bank in bank_loan_senders) and 'payment from' in d:
         return 'Loan Disbursement'
 
     # 2. LOAN REPAYMENT = Money going OUT
@@ -69,7 +69,7 @@ def categorize(details, txid_group):
         return 'Loan Repayment'
     if any(bank in d for bank in bank_loan_senders) and 'pay bill' in d:
         return 'Loan Repayment'
-    if 'od loan' in d or 'repayment' in d or d == "":
+    if 'od loan' in d or 'repayment' in d:
         return 'Fuliza Repayment'
 
     # ===== REST OF EXISTING RULES =====
@@ -94,7 +94,10 @@ def categorize(details, txid_group):
     if 'deposit' in d and 'agent' not in d: return 'Bank Deposit'
     return 'Other'
 
-def get_in_out(amount):
+def get_in_out(amount, category=""):
+    # FIX: Force all repayments to be Money OUT
+    if category in ['Loan Repayment', 'Fuliza Repayment']:
+        return (0.0, abs(amount))
     return (amount, 0.0) if amount > 0 else (0.0, abs(amount))
 
 def parse_mpesa_text(full_text):
@@ -117,19 +120,31 @@ def parse_mpesa_text(full_text):
     for key, items in txid_groups.items():
         dt, txid = items[0]['dt'], items[0]['txid']
         has_fuliza = any('fuliza' in i['details'].lower() or 'overdraft' in i['details'].lower() for i in items)
+        has_paybill = any('pay bill' in i['details'].lower() for i in items)
+        has_overdraft = any('overdraft' in i['details'].lower() and 'credit party' in i['details'].lower() for i in items)
         group = {'has_fuliza': has_fuliza}
-        has_borrow = any('overdraft' in i['details'].lower() and 'credit party' in i['details'].lower() for i in items)
+
+        # FIX: If same TXID has PayBill + Overdraft = 1 Loan Repayment
+        if has_paybill and has_overdraft:
+            paybill_item = next((i for i in items if 'pay bill' in i['details'].lower()), items[0])
+            amount = abs(paybill_item['amount'])
+            cat = 'Loan Repayment'
+            paid_in, withdrawn = get_in_out(amount, cat)
+            data.append([dt, f"{txid} | {clean_details(paybill_item['details'])}", paid_in, withdrawn, cat, "M-PESA"])
+            continue
+
+        has_borrow = has_overdraft
         has_withdraw = any('withdraw' in i['details'].lower() and 'agent' in i['details'].lower() for i in items)
         if has_borrow and has_withdraw:
             for i in items:
-                paid_in, withdrawn = get_in_out(i['amount'])
                 cat = categorize(i['details'], group)
+                paid_in, withdrawn = get_in_out(i['amount'], cat)
                 data.append([dt, f"{txid} | {clean_details(i['details'])}", paid_in, withdrawn, cat, "M-PESA"])
             continue
         combined_details = f"{txid} | {' | '.join([clean_details(i['details']) for i in items])}"
         main_amount = max([i['amount'] for i in items], key=abs) if items else 0.0
         cat = categorize(combined_details, group)
-        paid_in, withdrawn = get_in_out(main_amount)
+        paid_in, withdrawn = get_in_out(main_amount, cat)
         data.append([dt, combined_details, paid_in, withdrawn, cat, "M-PESA"])
     return data
 
@@ -143,7 +158,7 @@ def load_and_process(file_bytes, file_type):
             raw_amount = clean_amount(row.get('Amount', clean_amount(row.get('Paid In', 0)) - clean_amount(row.get('Withdrawn', 0))))
             group = {'has_fuliza': 'fuliza' in details.lower() or 'overdraft' in details.lower()}
             cat = categorize(details, group)
-            paid_in, withdrawn = get_in_out(raw_amount)
+            paid_in, withdrawn = get_in_out(raw_amount, cat)
             data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
     else:
         full_text = ""
