@@ -31,8 +31,8 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9")
-st.caption("Now with Loan Disbursement + Loan Repayment detection. Pagination enabled.")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.1")
+st.caption("Fixed: All B2C API 'Payment From' now = Loan Disbursement")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -49,14 +49,19 @@ def categorize(details, txid_group):
 
     # ===== LOAN KEYWORDS =====
     loan_keywords = ['loan', 'promotion payment', 'disbursement', 'facility', 'credit']
-    bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa']
+    bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa', 'simplepay', 'eclof', 'tala', 'branch', 'fairmoney', 'okash', 'kopa']
     b2c_api = 'via api' in d and 'original conversation id' in d
     # =========================
 
     # 1. LOAN DISBURSEMENT = Money coming IN
+    # Rule A: Has loan word + B2C API
     if any(k in d for k in loan_keywords) and b2c_api:
         return 'Loan Disbursement'
+    # Rule B: From known bank/loan company + B2C API + "payment from"
     if any(bank in d for bank in bank_loan_senders) and 'payment from' in d and b2c_api:
+        return 'Loan Disbursement'
+    # Rule C: ANY B2C API "Payment From" - catch the rest
+    if 'payment from' in d and b2c_api and not 'business payment fr' in d:
         return 'Loan Disbursement'
 
     # 2. LOAN REPAYMENT = Money going OUT
@@ -100,7 +105,7 @@ def parse_mpesa_text(full_text):
     for line in lines:
         line = line.strip()
         if not line: continue
-        buffer += " " + line
+        buffer += " + line
         match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+?)\s+([\-\d,]+\.?\d*)\s+([\d,]+\.?\d*)$', buffer)
         if match:
             txid, dt = match.group(1), f"{match.group(2)} {match.group(3)}"
@@ -196,7 +201,7 @@ if uploaded_file:
 
     st.success(f"Found {len(df)} transactions 🎉")
 
-    # ===== NEW LOAN METRICS =====
+    # ===== LOAN METRICS =====
     loan_in = df[df['Category'] == 'Loan Disbursement']['Paid In'].sum()
     loan_out = df[df['Category'] == 'Loan Repayment']['Withdrawn'].sum() + df[df['Category'] == 'Fuliza Repayment']['Withdrawn'].sum()
 
