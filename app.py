@@ -39,7 +39,7 @@ check_password()
 
 st.title("📄 Smart Statement Reader - M-PESA + Bank")
 st.write("Upload your M-PESA PDF, CSV or Excel statement to auto-categorize everything")
-st.caption("Tip: For large PDFs >10 pages, OCR will run in batches to fit in 1GB RAM")
+st.caption("Tip: For large PDFs >60 pages, use CSV or split PDF. Filtering uses cache to save RAM.")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -136,6 +136,12 @@ def parse_mpesa_text(full_text):
 
     return data
 
+@st.cache_data(show_spinner=False) # CRITICAL: Cache so filtering doesn't re-run everything
+def load_data(data):
+    df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
+    return df
+
 if uploaded_file:
     data = []
     file_type = uploaded_file.name.split('.')[-1].lower()
@@ -199,7 +205,7 @@ if uploaded_file:
                         progress_bar.progress((idx + 1) / ((total_pages // batch_size) + 1))
 
                 except Exception as e:
-                    st.error(f"OCR failed: {e}. For large PDFs >20 pages, please split PDF or use CSV export from M-PESA.")
+                    st.error(f"OCR failed: {e}. For large PDFs >60 pages try CSV export from M-PESA instead.")
                     st.stop()
 
             data = parse_mpesa_text(full_text)
@@ -208,8 +214,7 @@ if uploaded_file:
         st.error("No transactions found. File might be corrupted, password protected, or fully scanned.")
         st.stop()
 
-    df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
-    df['Date'] = pd.to_datetime(df['Date'], errors='coerce', dayfirst=True)
+    df = load_data(data) # USE CACHED VERSION
     st.success(f"Found {len(df)} transactions 🎉")
 
     col1, col2, col3, col4 = st.columns(4)
@@ -267,7 +272,16 @@ if uploaded_file:
     if cat_filter: df_filtered = df_filtered[df_filtered['Category'].isin(cat_filter)]
 
     st.write(f"Showing **{len(df_filtered)}** of **{len(df)}** transactions")
-    st.dataframe(df_filtered.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
+
+    # PAGINATION - CRITICAL FOR 1GB RAM
+    page_size = 100
+    total_pages = max(1, (len(df_filtered) - 1) // page_size + 1)
+    page_number = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
+
+    start_idx = (page_number - 1) * page_size
+    end_idx = start_idx + page_size
+
+    st.dataframe(df_filtered.sort_values('Date', ascending=False).iloc[start_idx:end_idx], use_container_width=True, hide_index=True)
 
     csv = df_filtered.to_csv(index=False).encode()
     st.download_button("⬇️ Download Filtered CSV", csv, f"filtered_statement_{datetime.now().strftime('%Y%m%d')}.csv")
