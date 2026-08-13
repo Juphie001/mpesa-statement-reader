@@ -22,7 +22,6 @@ def check_password():
     if "password_correct" not in st.session_state:
         st.title("🔒 Smart Statement Reader")
         st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
-        st.caption("This app is private. Contact owner for access.")
         st.stop()
     elif not st.session_state["password_correct"]:
         st.title("🔒 Smart Statement Reader")
@@ -31,8 +30,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.5")
-st.caption("Optimized for 1GB Streamlit Cloud. Fixed dates + 500 row limit.")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.6")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -79,7 +77,7 @@ def parse_mpesa_text(full_text):
     for line in lines:
         line = line.strip()
         if not line: continue
-        buffer += " " + line
+        buffer += " + line
         match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+?)\s+([\-\d,]+\.?\d*)\s+([\d,]+\.?\d*)$', buffer)
         if match:
             txid, dt = match.group(1), f"{match.group(2)} {match.group(3)}"
@@ -131,10 +129,8 @@ def load_and_process(file_bytes, file_type):
             info = pdfinfo_from_bytes(file_bytes)
             total_pages = info["Pages"]
             batch_size = 2
-            progress_placeholder = st.empty()
-            for idx, start in enumerate(range(1, total_pages + 1, batch_size)):
+            for start in range(1, total_pages + 1, batch_size):
                 end = min(start + batch_size - 1, total_pages)
-                progress_placeholder.text(f"OCR Pages {start}-{end}/{total_pages}...")
                 images = convert_from_bytes(file_bytes, dpi=100, first_page=start, last_page=end, fmt='jpg')
                 for image in images:
                     text = pytesseract.image_to_string(image)
@@ -142,19 +138,14 @@ def load_and_process(file_bytes, file_type):
                     image.close()
                 del images
                 gc.collect()
-            progress_placeholder.empty()
         data = parse_mpesa_text(full_text)
 
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
-
-    # ===== DATE FIX: Handle 3 formats =====
     df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
     mask = df['Date'].isna()
     df.loc[mask, 'Date'] = pd.to_datetime(df.loc[mask, 'Date'], format='%d-%m-%Y %H:%M:%S', errors='coerce')
     mask = df['Date'].isna()
     df.loc[mask, 'Date'] = pd.to_datetime(df.loc[mask, 'Date'], dayfirst=True, errors='coerce')
-    # ======================================
-
     df['Paid In'] = pd.to_numeric(df['Paid In'], downcast='float')
     df['Withdrawn'] = pd.to_numeric(df['Withdrawn'], downcast='float')
     df['Category'] = df['Category'].astype('category')
@@ -165,7 +156,7 @@ if uploaded_file:
     file_type = uploaded_file.name.split('.')[-1].lower()
 
     if 'df' not in st.session_state or st.session_state.get('filename')!= uploaded_file.name:
-        with st.spinner("Processing file... This may take 2-3min for large PDFs"):
+        with st.spinner("Processing file..."):
             df = load_and_process(file_bytes, file_type)
             st.session_state.df = df
             st.session_state.filename = uploaded_file.name
@@ -175,7 +166,6 @@ if uploaded_file:
         df = st.session_state.df
 
     st.success(f"Found {len(df)} transactions 🎉")
-
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
     col2.metric("💸 Money Out", f"KES {df['Withdrawn'].sum():,.2f}")
@@ -190,7 +180,7 @@ if uploaded_file:
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.sort_values('Date', ascending=False).to_excel(writer, sheet_name='All Transactions', index=False)
         st.session_state.summary.to_excel(writer, sheet_name='Category Summary', index=False)
-    st.download_button("⬇️ Download Full Excel Report", output.getvalue(), f"statement_report_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("⬇️ Download Full Excel Report", output.getvalue(), f"statement_report_{datetime.now().strftime('%Y%m%d')}.xlsx")
 
     st.divider()
     st.subheader("📑 All Transactions")
@@ -204,12 +194,18 @@ if uploaded_file:
     if search: df_filtered = df_filtered[df_filtered['Details'].str.contains(search, case=False, na=False)]
     if cat_filter: df_filtered = df_filtered[df_filtered['Category'].isin(cat_filter)]
 
-    st.info(f"⚠️ Cloud limit: Showing max 500 rows. Total filtered: {len(df_filtered)}. Download Excel for all rows.")
-    df_display = df_filtered.sort_values('Date', ascending=False).head(500)
+    # ===== PAGINATION =====
+    page_size = 200 # CHANGE THIS: 100, 200, 500
+    total_pages = max(1, (len(df_filtered) - 1) // page_size + 1)
+    page_number = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
+    start_idx = (page_number - 1) * page_size
+    end_idx = start_idx + page_size
+    st.info(f"Showing rows {start_idx+1} to {min(end_idx, len(df_filtered))} of {len(df_filtered)}")
+    df_display = df_filtered.sort_values('Date', ascending=False).iloc[start_idx:end_idx]
     st.dataframe(df_display, use_container_width=True, hide_index=True)
+    # ======================
 
     csv = df_filtered.to_csv(index=False).encode()
-    st.download_button("⬇️ Download Filtered CSV", csv, f"filtered_statement_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
+    st.download_button("⬇️ Download Filtered CSV", csv, f"filtered_statement_{datetime.now().strftime('%Y%m%d')}.csv")
 else:
     st.info("👆 Upload your M-PESA statement to get started")
-    
