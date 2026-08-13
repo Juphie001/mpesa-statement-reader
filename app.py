@@ -102,7 +102,7 @@ def parse_mpesa_text(full_text):
     for line in lines:
         line = line.strip()
         if not line: continue
-        buffer += " + line
+        buffer += " " + line
         # FIX: (.+) instead of (.+?) to grab full details including "908251 - ECLOF-KENYA Acc."
         match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+)\s+([\-\d,]+\.?\d*)\s+([\d,]+\.?\d*)$', buffer)
         if match:
