@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.1d")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.1f")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -102,14 +102,14 @@ def parse_mpesa_text(full_text):
     for line in lines:
         line = line.strip()
         if not line: continue
-        buffer += " " + line # Join with space so line breaks don't break it
-        # FIX: Use greedy (.+) and anchor to last 2 numbers at end of line
-        match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+?)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', buffer)
+        buffer += " " + line
+        # FIX: Greedy (.+) to capture multi-line details until amount + balance
+        match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', buffer)
         if match:
             txid, dt = match.group(1), f"{match.group(2)} {match.group(3)}"
             details, amount = match.group(4).strip(), clean_amount(match.group(5))
             raw_transactions.append({'key': f"{txid}_{dt}", 'txid': txid, 'dt': dt, 'details': details, 'amount': amount})
-            buffer = "" # Reset buffer only after full match
+            buffer = "" # Reset only when we got full match
     txid_groups = {}
     for t in raw_transactions: txid_groups.setdefault(t['key'], []).append(t)
     for key, items in txid_groups.items():
@@ -130,7 +130,7 @@ def parse_mpesa_text(full_text):
         paid_in, withdrawn = get_in_out(main_amount)
         data.append([dt, combined_details, paid_in, withdrawn, cat, "M-PESA"])
     return data
-    
+
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_and_process(file_bytes, file_type):
     data = []
