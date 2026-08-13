@@ -31,8 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.1b")
-st.caption("Loan names like ECLOF, BOA, TALA now visible in Details column")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.1c")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -41,7 +40,8 @@ def clean_amount(x):
     except: return 0.0
 
 def clean_details(d):
-    return re.sub(r'completed[-\s]*[\d,]+\.?\d*', '', str(d), flags=re.IGNORECASE).strip()
+    # REMOVED: aggressive cleaning. Only remove "Completed -123.00" at end
+    return re.sub(r'\s*Completed[-\s]*[\d,]+\.?\d*$', '', str(d), flags=re.IGNORECASE).strip()
 
 def categorize(details, txid_group):
     d = clean_details(details).lower()
@@ -49,7 +49,7 @@ def categorize(details, txid_group):
 
     # ===== LOAN KEYWORDS =====
     loan_keywords = ['loan', 'promotion payment', 'disbursement', 'facility', 'credit']
-    bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa', 'simplepay', 'eclof', 'tala', 'branch', 'fairmoney', 'okash', 'kopa']
+    bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa', 'simplepay', 'eclof', 'tala', 'branch', 'fairmoney', 'okash', 'kopa', 'tower sacco']
     b2c_api = 'via api' in d and 'original conversation id' in d
     # =========================
 
@@ -102,7 +102,7 @@ def parse_mpesa_text(full_text):
     for line in lines:
         line = line.strip()
         if not line: continue
-        buffer += " " + line # FIXED: was " + line causing error
+        buffer += " " + line
         match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+?)\s+([\-\d,]+\.?\d*)\s+([\d,]+\.?\d*)$', buffer)
         if match:
             txid, dt = match.group(1), f"{match.group(2)} {match.group(3)}"
@@ -121,9 +121,9 @@ def parse_mpesa_text(full_text):
             for i in items:
                 paid_in, withdrawn = get_in_out(i['amount'])
                 cat = categorize(i['details'], group)
-                data.append([dt, f"{txid} | {clean_details(i['details'])}", paid_in, withdrawn, cat, "M-PESA"]) # Loan name visible here
+                data.append([dt, f"{txid} | {clean_details(i['details'])}", paid_in, withdrawn, cat, "M-PESA"])
             continue
-        combined_details = f"{txid} | {' | '.join([clean_details(i['details']) for i in items])}" # Loan name visible here too
+        combined_details = f"{txid} | {' | '.join([clean_details(i['details']) for i in items])}"
         main_amount = max([i['amount'] for i in items], key=abs) if items else 0.0
         cat = categorize(combined_details, group)
         paid_in, withdrawn = get_in_out(main_amount)
