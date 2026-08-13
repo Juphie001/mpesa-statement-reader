@@ -31,8 +31,8 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.6")
-st.caption("Fixed: Loan Taken + Loan Repaid with Fuliza")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.0")
+st.caption("Stable Version: Simple parsing. Loan names visible")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -47,11 +47,9 @@ def categorize(details, txid_group):
     d = clean_details(details).lower()
     has_fuliza = txid_group.get('has_fuliza', False) or 'fuliza' in d or 'overdraft' in d
 
-    # ===== LOAN KEYWORDS =====
     loan_keywords = ['loan', 'promotion payment', 'disbursement', 'facility', 'credit']
     bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa', 'simplepay', 'eclof', 'tala', 'branch', 'fairmoney', 'okash', 'kopa']
-    b2c_api = ('via api' in d and 'original conversation id' in d) or ('via api' in d and 'conversation id' in d)
-    # =========================
+    b2c_api = 'via api' in d and 'original conversation id' in d
 
     # 1. LOAN DISBURSEMENT = Money coming IN
     if any(k in d for k in loan_keywords) and b2c_api:
@@ -59,9 +57,6 @@ def categorize(details, txid_group):
     if any(bank in d for bank in bank_loan_senders) and 'payment from' in d and b2c_api:
         return 'Loan Disbursement'
     if 'payment from' in d and b2c_api and not 'business payment fr' in d:
-        return 'Loan Disbursement'
-    # Rule D: Catch banks even if API text split across lines
-    if any(bank in d for bank in bank_loan_senders) and 'payment from' in d:
         return 'Loan Disbursement'
 
     # 2. LOAN REPAYMENT = Money going OUT
@@ -72,7 +67,7 @@ def categorize(details, txid_group):
     if 'od loan' in d or 'repayment' in d:
         return 'Fuliza Repayment'
 
-    # ===== REST OF EXISTING RULES =====
+    # ===== OTHER RULES =====
     if 'bank' in d and 'business payment fr' in d and 'api' in d: return 'Business Payment Received - Fuliza' if has_fuliza else 'Business Payment Received'
     if 'airtime' in d: return 'Airtime - Fuliza' if has_fuliza else 'Airtime'
     if has_fuliza and ('merchant payment' in d or 'buy goods' in d or 'customer payment to small' in d): return 'Till Payment - Fuliza'
@@ -94,58 +89,27 @@ def categorize(details, txid_group):
     if 'deposit' in d and 'agent' not in d: return 'Bank Deposit'
     return 'Other'
 
-def get_in_out(amount, category=""):
-    # FIX: Force all repayments to be Money OUT
-    if category in ['Loan Repayment', 'Fuliza Repayment']:
-        return (0.0, abs(amount))
+def get_in_out(amount): # SIMPLE - No forcing
     return (amount, 0.0) if amount > 0 else (0.0, abs(amount))
 
 def parse_mpesa_text(full_text):
     data = []
     lines = full_text.split('\n')
-    buffer = ""
-    raw_transactions = []
-    for line in lines:
+    for line in lines: # NO BUFFER, NO GROUPING
         line = line.strip()
         if not line: continue
-        buffer += " " + line
-        match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+?)\s+([\-\d,]+\.?\d*)\s+([\d,]+\.?\d*)$', buffer)
+        match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+?)\s+([\-\d,]+\.?\d*)\s+([\d,]+\.?\d*)$', line)
         if match:
             txid, dt = match.group(1), f"{match.group(2)} {match.group(3)}"
-            details, amount = match.group(4).strip(), clean_amount(match.group(5))
-            raw_transactions.append({'key': f"{txid}_{dt}", 'txid': txid, 'dt': dt, 'details': details, 'amount': amount})
-            buffer = ""
-    txid_groups = {}
-    for t in raw_transactions: txid_groups.setdefault(t['key'], []).append(t)
-    for key, items in txid_groups.items():
-        dt, txid = items[0]['dt'], items[0]['txid']
-        has_fuliza = any('fuliza' in i['details'].lower() or 'overdraft' in i['details'].lower() for i in items)
-        has_paybill = any('pay bill' in i['details'].lower() for i in items)
-        has_overdraft = any('overdraft' in i['details'].lower() and 'credit party' in i['details'].lower() for i in items)
-        group = {'has_fuliza': has_fuliza}
-
-        # FIX: If same TXID has PayBill + Overdraft = 1 Loan Repayment
-        if has_paybill and has_overdraft:
-            paybill_item = next((i for i in items if 'pay bill' in i['details'].lower()), items[0])
-            amount = abs(paybill_item['amount'])
-            cat = 'Loan Repayment'
-            paid_in, withdrawn = get_in_out(amount, cat)
-            data.append([dt, f"{txid} | {clean_details(paybill_item['details'])}", paid_in, withdrawn, cat, "M-PESA"])
-            continue
-
-        has_borrow = has_overdraft
-        has_withdraw = any('withdraw' in i['details'].lower() and 'agent' in i['details'].lower() for i in items)
-        if has_borrow and has_withdraw:
-            for i in items:
-                cat = categorize(i['details'], group)
-                paid_in, withdrawn = get_in_out(i['amount'], cat)
-                data.append([dt, f"{txid} | {clean_details(i['details'])}", paid_in, withdrawn, cat, "M-PESA"])
-            continue
-        combined_details = f"{txid} | {' | '.join([clean_details(i['details']) for i in items])}"
-        main_amount = max([i['amount'] for i in items], key=abs) if items else 0.0
-        cat = categorize(combined_details, group)
-        paid_in, withdrawn = get_in_out(main_amount, cat)
-        data.append([dt, combined_details, paid_in, withdrawn, cat, "M-PESA"])
+            details_raw, amount = match.group(4).strip(), clean_amount(match.group(5))
+            
+            has_fuliza = 'fuliza' in details_raw.lower() or 'overdraft' in details_raw.lower()
+            group = {'has_fuliza': has_fuliza}
+            
+            details = f"{txid} | {clean_details(details_raw)}" # Loan name visible: ECLOF, BOA
+            cat = categorize(details_raw, group)
+            paid_in, withdrawn = get_in_out(amount)
+            data.append([dt, details, paid_in, withdrawn, cat, "M-PESA"])
     return data
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -158,7 +122,7 @@ def load_and_process(file_bytes, file_type):
             raw_amount = clean_amount(row.get('Amount', clean_amount(row.get('Paid In', 0)) - clean_amount(row.get('Withdrawn', 0))))
             group = {'has_fuliza': 'fuliza' in details.lower() or 'overdraft' in details.lower()}
             cat = categorize(details, group)
-            paid_in, withdrawn = get_in_out(raw_amount, cat)
+            paid_in, withdrawn = get_in_out(raw_amount)
             data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
     else:
         full_text = ""
@@ -188,7 +152,6 @@ def load_and_process(file_bytes, file_type):
 
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
 
-    # DATE FIX: Handle 3 formats
     df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
     mask = df['Date'].isna()
     df.loc[mask, 'Date'] = pd.to_datetime(df.loc[mask, 'Date'], format='%d-%m-%Y %H:%M:%S', errors='coerce')
@@ -216,7 +179,6 @@ if uploaded_file:
 
     st.success(f"Found {len(df)} transactions 🎉")
 
-    # ===== LOAN METRICS =====
     loan_in = df[df['Category'] == 'Loan Disbursement']['Paid In'].sum()
     loan_out = df[df['Category'] == 'Loan Repayment']['Withdrawn'].sum() + df[df['Category'] == 'Fuliza Repayment']['Withdrawn'].sum()
 
@@ -249,7 +211,6 @@ if uploaded_file:
     if search: df_filtered = df_filtered[df_filtered['Details'].str.contains(search, case=False, na=False)]
     if cat_filter: df_filtered = df_filtered[df_filtered['Category'].isin(cat_filter)]
 
-    # ===== PAGINATION ONLY =====
     colA, colB = st.columns([1,3])
     with colA:
         page_size = st.selectbox("Rows per page", [100, 200, 500], index=1)
@@ -263,7 +224,6 @@ if uploaded_file:
     st.info(f"Showing rows {start_idx+1} to {min(end_idx, len(df_filtered))} of {len(df_filtered)}")
     df_display = df_filtered.sort_values('Date', ascending=False).iloc[start_idx:end_idx]
     st.dataframe(df_display, use_container_width=True, hide_index=True)
-    # ===========================
 
     csv = df_filtered.to_csv(index=False).encode()
     st.download_button("⬇️ Download Filtered CSV", csv, f"filtered_statement_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
