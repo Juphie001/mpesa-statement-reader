@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.1c")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.1d")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -40,7 +40,7 @@ def clean_amount(x):
     except: return 0.0
 
 def clean_details(d):
-    # REMOVED: aggressive cleaning. Only remove "Completed -123.00" at end
+    # Only remove "Completed -123.00" at the end. Keep Paybill names
     return re.sub(r'\s*Completed[-\s]*[\d,]+\.?\d*$', '', str(d), flags=re.IGNORECASE).strip()
 
 def categorize(details, txid_group):
@@ -102,8 +102,9 @@ def parse_mpesa_text(full_text):
     for line in lines:
         line = line.strip()
         if not line: continue
-        buffer += " " + line
-        match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+?)\s+([\-\d,]+\.?\d*)\s+([\d,]+\.?\d*)$', buffer)
+        buffer += " + line
+        # FIX: (.+) instead of (.+?) to grab full details including "908251 - ECLOF-KENYA Acc."
+        match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+)\s+([\-\d,]+\.?\d*)\s+([\d,]+\.?\d*)$', buffer)
         if match:
             txid, dt = match.group(1), f"{match.group(2)} {match.group(3)}"
             details, amount = match.group(4).strip(), clean_amount(match.group(5))
