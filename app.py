@@ -31,8 +31,8 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.7")
-st.caption("Pagination enabled. No row limits. Optimized for 1GB Streamlit Cloud.")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9")
+st.caption("Now with Loan Disbursement + Loan Repayment detection. Pagination enabled.")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -46,7 +46,28 @@ def clean_details(d):
 def categorize(details, txid_group):
     d = clean_details(details).lower()
     has_fuliza = txid_group.get('has_fuliza', False) or 'fuliza' in d or 'overdraft' in d
-    if 'od loan' in d or 'repayment' in d or d == "": return 'Fuliza Repayment'
+
+    # ===== LOAN KEYWORDS =====
+    loan_keywords = ['loan', 'promotion payment', 'disbursement', 'facility', 'credit']
+    bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa']
+    b2c_api = 'via api' in d and 'original conversation id' in d
+    # =========================
+
+    # 1. LOAN DISBURSEMENT = Money coming IN
+    if any(k in d for k in loan_keywords) and b2c_api:
+        return 'Loan Disbursement'
+    if any(bank in d for bank in bank_loan_senders) and 'payment from' in d and b2c_api:
+        return 'Loan Disbursement'
+
+    # 2. LOAN REPAYMENT = Money going OUT
+    if any(k in d for k in loan_keywords) and 'pay bill' in d:
+        return 'Loan Repayment'
+    if any(bank in d for bank in bank_loan_senders) and 'pay bill' in d:
+        return 'Loan Repayment'
+    if 'od loan' in d or 'repayment' in d or d == "":
+        return 'Fuliza Repayment'
+
+    # ===== REST OF EXISTING RULES =====
     if 'bank' in d and 'business payment fr' in d and 'api' in d: return 'Business Payment Received - Fuliza' if has_fuliza else 'Business Payment Received'
     if 'airtime' in d: return 'Airtime - Fuliza' if has_fuliza else 'Airtime'
     if has_fuliza and ('merchant payment' in d or 'buy goods' in d or 'customer payment to small' in d): return 'Till Payment - Fuliza'
@@ -174,11 +195,17 @@ if uploaded_file:
         df = st.session_state.df
 
     st.success(f"Found {len(df)} transactions 🎉")
-    col1, col2, col3, col4 = st.columns(4)
+
+    # ===== NEW LOAN METRICS =====
+    loan_in = df[df['Category'] == 'Loan Disbursement']['Paid In'].sum()
+    loan_out = df[df['Category'] == 'Loan Repayment']['Withdrawn'].sum() + df[df['Category'] == 'Fuliza Repayment']['Withdrawn'].sum()
+
+    col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
     col2.metric("💸 Money Out", f"KES {df['Withdrawn'].sum():,.2f}")
     col3.metric("📊 Net", f"KES {df['Paid In'].sum() - df['Withdrawn'].sum():,.2f}")
-    col4.metric("📑 Transactions", len(df))
+    col4.metric("🏦 Loans Taken", f"KES {loan_in:,.2f}")
+    col5.metric("↩️ Loans Repaid", f"KES {loan_out:,.2f}")
 
     st.divider()
     st.subheader("📊 Spending Breakdown by Category")
@@ -202,7 +229,7 @@ if uploaded_file:
     if search: df_filtered = df_filtered[df_filtered['Details'].str.contains(search, case=False, na=False)]
     if cat_filter: df_filtered = df_filtered[df_filtered['Category'].isin(cat_filter)]
 
-    # ===== PAGINATION ONLY - NO HARD LIMIT =====
+    # ===== PAGINATION ONLY =====
     colA, colB = st.columns([1,3])
     with colA:
         page_size = st.selectbox("Rows per page", [100, 200, 500], index=1)
@@ -216,7 +243,7 @@ if uploaded_file:
     st.info(f"Showing rows {start_idx+1} to {min(end_idx, len(df_filtered))} of {len(df_filtered)}")
     df_display = df_filtered.sort_values('Date', ascending=False).iloc[start_idx:end_idx]
     st.dataframe(df_display, use_container_width=True, hide_index=True)
-    # ===========================================
+    # ===========================
 
     csv = df_filtered.to_csv(index=False).encode()
     st.download_button("⬇️ Download Filtered CSV", csv, f"filtered_statement_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
