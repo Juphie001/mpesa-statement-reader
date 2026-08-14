@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.7")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.8")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -41,7 +41,6 @@ def clean_amount(x):
 
 def clean_details(d):
     d = str(d)
-    # Keep "Completed" but remove the amount after it: "Completed-61.00" -> "Completed"
     d = re.sub(r'Completed[-\s]*[\d,]+\.?\d*$', 'Completed', d, flags=re.IGNORECASE)
     d = re.sub(r'\s+', ' ', d).strip()
     return d
@@ -49,6 +48,11 @@ def clean_details(d):
 def categorize(details, txid_group):
     d = clean_details(details).lower()
     has_fuliza = txid_group.get('has_fuliza', False) or 'fuliza' in d or 'overdraft' in d
+
+    # ===== NEW RULE: Any B2C with OriginalConversationID = Loan Taken =====
+    if 'original conversation id' in d:
+        return 'Loan Taken'
+    # =====================================================================
 
     loan_keywords = ['loan', 'promotion payment', 'disbursement', 'facility', 'credit']
     bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa', 'simplepay', 'eclof', 'tala', 'branch', 'fairmoney', 'okash', 'kopa', 'tower sacco']
@@ -159,7 +163,6 @@ def load_and_process(file_bytes, file_type):
             progress_placeholder.empty()
         data = parse_mpesa_text(full_text)
 
-    # NO MERCHANT COLUMN ANYMORE
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
 
     df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
@@ -185,14 +188,18 @@ if uploaded_file:
     else:
         df = st.session_state.df
     st.success(f"Found {len(df)} transactions 🎉")
-    loan_in = df[df['Category'] == 'Loan Disbursement']['Paid In'].sum()
-    loan_out = df[df['Category'] == 'Loan Repayment']['Withdrawn'].sum() + df[df['Category'] == 'Fuliza Repayment']['Withdrawn'].sum()
+
+    # Updated metrics to include new 'Loan Taken' category
+    loan_in = df[df['Category'].isin(['Loan Disbursement', 'Loan Taken'])]['Paid In'].sum()
+    loan_out = df[df['Category'].isin(['Loan Repayment', 'Fuliza Repayment'])]['Withdrawn'].sum()
+
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
     col2.metric("💸 Money Out", f"KES {df['Withdrawn'].sum():,.2f}")
     col3.metric("📊 Net", f"KES {df['Paid In'].sum() - df['Withdrawn'].sum():,.2f}")
     col4.metric("🏦 Loans Taken", f"KES {loan_in:,.2f}")
     col5.metric("↩️ Loans Repaid", f"KES {loan_out:,.2f}")
+
     st.divider()
     st.subheader("📊 Spending Breakdown by Category")
     st.dataframe(st.session_state.summary.sort_values('Withdrawn', ascending=False), use_container_width=True, hide_index=True)
