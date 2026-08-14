@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.1")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.2")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -49,7 +49,6 @@ def categorize(details, txid_group):
     d = clean_details(details).lower()
     has_fuliza = txid_group.get('has_fuliza', False) or 'fuliza' in d or 'overdraft' in d
 
-    # REMOVED ALL LOAN LOGIC
     if 'od loan' in d or 'repayment' in d or d == "": return 'Fuliza Repayment'
     if 'bank' in d and 'business payment fr' in d and 'api' in d: return 'Business Payment Received - Fuliza' if has_fuliza else 'Business Payment Received'
     if 'airtime' in d: return 'Airtime - Fuliza' if has_fuliza else 'Airtime'
@@ -79,10 +78,21 @@ def parse_mpesa_text(full_text):
     data = []
     lines = [l.strip() for l in full_text.split('\n') if l.strip()]
     raw_transactions = []
-    pattern = re.compile(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.*?)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', re.DOTALL)
+
+    # FIXED PATTERN: (.+?) is now greedy and DOTALL captures multi-line details
+    pattern = re.compile(
+        r'([A-Z0-9]{10})\s+' # TXID
+        r'(\d{4}-\d{2}-\d{2})\s+' # Date
+        r'(\d{2}:\d{2}:\d{2})\s+' # Time
+        r'(.+?)' # Details - captures everything until amount
+        r'\s+(-?[\d,]+\.?\d+)\s+' # Amount
+        r'([\d,]+\.?\d+)$', # Balance
+        re.DOTALL | re.IGNORECASE
+    )
+
     buffer = ""
     for line in lines:
-        buffer += " " + line
+        buffer += " " + line # keep appending lines
         match = pattern.search(buffer)
         if match:
             txid = match.group(1)
@@ -90,21 +100,25 @@ def parse_mpesa_text(full_text):
             details = match.group(4).strip()
             amount = clean_amount(match.group(5))
             raw_transactions.append({'key': f"{txid}_{dt}", 'txid': txid, 'dt': dt, 'details': details, 'amount': amount})
-            buffer = ""
+            buffer = "" # reset only after we found a complete transaction
+
     txid_groups = {}
     for t in raw_transactions: txid_groups.setdefault(t['key'], []).append(t)
+
     for key, items in txid_groups.items():
         dt, txid = items[0]['dt'], items[0]['txid']
         has_fuliza = any('fuliza' in i['details'].lower() or 'overdraft' in i['details'].lower() for i in items)
         group = {'has_fuliza': has_fuliza}
         has_borrow = any('overdraft' in i['details'].lower() and 'credit party' in i['details'].lower() for i in items)
         has_withdraw = any('withdraw' in i['details'].lower() and 'agent' in i['details'].lower() for i in items)
+
         if has_borrow and has_withdraw:
             for i in items:
                 paid_in, withdrawn = get_in_out(i['amount'])
                 cat = categorize(i['details'], group)
                 data.append([dt, f"{txid} | {clean_details(i['details'])}", paid_in, withdrawn, cat, "M-PESA"])
             continue
+
         combined_details = f"{txid} | {' | '.join([clean_details(i['details']) for i in items])}"
         main_amount = max([i['amount'] for i in items], key=abs) if items else 0.0
         cat = categorize(combined_details, group)
@@ -176,7 +190,6 @@ if uploaded_file:
         df = st.session_state.df
     st.success(f"Found {len(df)} transactions 🎉")
 
-    # REMOVED LOAN METRICS
     col1, col2, col3 = st.columns(3)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
     col2.metric("💸 Money Out", f"KES {df['Withdrawn'].sum():,.2f}")
