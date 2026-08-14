@@ -96,7 +96,7 @@ def parse_mpesa_text(full_text):
     pattern = re.compile(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.*?)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', re.DOTALL)
     buffer = ""
     for line in lines:
-        buffer += " + line # keep appending lines until we get a match
+        buffer += " " + line # keep appending lines until we get a match
         match = pattern.search(buffer)
         if match:
             txid = match.group(1)
