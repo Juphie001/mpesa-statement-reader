@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.5")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -77,50 +77,41 @@ def get_in_out(amount):
 def parse_mpesa_text(full_text):
     data = []
     lines = [l.strip() for l in full_text.split('\n') if l.strip()]
-    
-    # NEW LOGIC: Split by TXID blocks
     txid_pattern = re.compile(r'^([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})')
     
     current_block = []
     for line in lines:
-        if txid_pattern.match(line): # New transaction starts
-            if current_block: # process previous block
-                data.extend(process_block(current_block))
+        if txid_pattern.match(line):
+            if current_block: data.extend(process_block(current_block))
             current_block = [line]
         else:
             current_block.append(line)
-    
-    if current_block: # process last block
-        data.extend(process_block(current_block))
-        
+    if current_block: data.extend(process_block(current_block))
     return data
 
 def process_block(block_lines):
     data = []
     full_block = " ".join(block_lines)
-    
-    # Extract TXID, Date, Time from first line
     header_match = re.match(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})', full_block)
     if not header_match: return []
     
     txid = header_match.group(1)
     dt = f"{header_match.group(2)} {header_match.group(3)}"
     
-    # Extract Amount and Balance: they are always the last 2 numbers
-    amounts = re.findall(r'-?[\d,]+\.?\d+', full_block)
-    if len(amounts) < 2: return []
+    # FIX: Find Amount Balance pattern at the end. MPESA format: ...AMOUNT BALANCE [extra junk]
+    amt_bal_match = re.search(r'(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)(?:\s+\d+\s+\d+)?\s*$', full_block)
+    if not amt_bal_match: return []
     
-    amount = clean_amount(amounts[-2])
-    # details = everything between time and the last 2 amounts
-    details_part = full_block[header_match.end():]
-    details_part = re.sub(r'-?[\d,]+\.?\d+\s+-?[\d,]+\.?\d+\s*$', '', details_part).strip()
+    amount = clean_amount(amt_bal_match.group(1))
+    
+    # Details = everything between header and amount
+    details_part = full_block[header_match.end():amt_bal_match.start()].strip()
     details = clean_details(details_part)
     
     has_fuliza = 'fuliza' in details.lower() or 'overdraft' in details.lower()
     group = {'has_fuliza': has_fuliza}
     cat = categorize(details, group)
     paid_in, withdrawn = get_in_out(amount)
-    
     data.append([dt, f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
     return data
 
