@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.3")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.4")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -40,8 +40,12 @@ def clean_amount(x):
     except: return 0.0
 
 def clean_details(d):
-    # Only remove "Completed -123.00" at the end. Keep Paybill names
-    return re.sub(r'\s*Completed[-\s]*[\d,]+\.?\d*$', '', str(d), flags=re.IGNORECASE).strip()
+    d = str(d)
+    # 1. Keep "Completed" but remove the amount after it: "Completed-61.00" -> "Completed"
+    d = re.sub(r'Completed[-\s]*[\d,]+\.?\d*$', 'Completed', d, flags=re.IGNORECASE)
+    # 2. Collapse multiple spaces but keep the structure
+    d = re.sub(r'\s+', ' ', d).strip()
+    return d
 
 def extract_merchant(details):
     d = str(details)
