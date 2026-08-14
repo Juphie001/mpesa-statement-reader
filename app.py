@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.8")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.9")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -49,10 +49,10 @@ def categorize(details, txid_group):
     d = clean_details(details).lower()
     has_fuliza = txid_group.get('has_fuliza', False) or 'fuliza' in d or 'overdraft' in d
 
-    # ===== NEW RULE: Any B2C with OriginalConversationID = Loan Taken =====
-    if 'original conversation id' in d:
+    # ===== RULE 1: Any transaction with Original Conversation ID = Loan Taken =====
+    if 'original conversation id' in d or 'originalconversationid' in d:
         return 'Loan Taken'
-    # =====================================================================
+    # ============================================================================
 
     loan_keywords = ['loan', 'promotion payment', 'disbursement', 'facility', 'credit']
     bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa', 'simplepay', 'eclof', 'tala', 'branch', 'fairmoney', 'okash', 'kopa', 'tower sacco']
@@ -92,10 +92,11 @@ def parse_mpesa_text(full_text):
     data = []
     lines = [l.strip() for l in full_text.split('\n') if l.strip()]
     raw_transactions = []
-    pattern = re.compile(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.*?)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$')
+    # DOTALL allows. to match newlines so we can grab multi-line details
+    pattern = re.compile(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.*?)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', re.DOTALL)
     buffer = ""
     for line in lines:
-        buffer += " " + line
+        buffer += " + line # keep appending lines until we get a match
         match = pattern.search(buffer)
         if match:
             txid = match.group(1)
@@ -103,7 +104,7 @@ def parse_mpesa_text(full_text):
             details = match.group(4).strip()
             amount = clean_amount(match.group(5))
             raw_transactions.append({'key': f"{txid}_{dt}", 'txid': txid, 'dt': dt, 'details': details, 'amount': amount})
-            buffer = ""
+            buffer = "" # reset buffer after we found a complete transaction
     txid_groups = {}
     for t in raw_transactions: txid_groups.setdefault(t['key'], []).append(t)
     for key, items in txid_groups.items():
@@ -189,7 +190,6 @@ if uploaded_file:
         df = st.session_state.df
     st.success(f"Found {len(df)} transactions 🎉")
 
-    # Updated metrics to include new 'Loan Taken' category
     loan_in = df[df['Category'].isin(['Loan Disbursement', 'Loan Taken'])]['Paid In'].sum()
     loan_out = df[df['Category'].isin(['Loan Repayment', 'Fuliza Repayment'])]['Withdrawn'].sum()
 
