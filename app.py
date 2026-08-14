@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.2")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.3")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -45,18 +45,22 @@ def clean_details(d):
 
 def extract_merchant(details):
     d = str(details)
-    # Case 1: Pay Bill - "M-Pesa to 4104151 - ONFON MOBILELIMITED PB Acc. 42933885"
-    m = re.search(r'(?:to|for)\s*\d+\s*-\s*([A-Z0-9\s\.\&]+?)(?:\s+PB\s+Acc\.|\s+ACC\.|\s+ACCOUNT|$)', d, re.IGNORECASE)
+    
+    # Case 1: Pay Bill with number - "to 4104151 - ONFON MOBILELIMITED PB Acc."
+    # Handles multi-line with re.DOTALL
+    m = re.search(r'(?:to|for)\s*\d+\s*-\s*([A-Z0-9\s\.\&\-]+?)(?:\s+PB\s+Acc\.|\s+ACC\.|\s+ACCOUNT|\s+Completed|$)', d, re.IGNORECASE | re.DOTALL)
     if m:
-        return m.group(1).strip()
+        name = m.group(1).strip().replace('\n',' ').replace(' ',' ')
+        return name
 
     # Case 2: Till - "Buy Goods to 123456 - SAFARICOM LIMITED"
-    m = re.search(r'(?:to)\s*\d+\s*-\s*([A-Z0-9\s\.\&]+)', d, re.IGNORECASE)
+    m = re.search(r'(?:to)\s*\d+\s*-\s*([A-Z0-9\s\.\&\-]+)', d, re.IGNORECASE | re.DOTALL)
     if m:
-        return m.group(1).strip()
+        name = m.group(1).strip().replace('\n',' ').replace(' ',' ')
+        return name
 
-    # Case 3: Send Money - "Sent to JOHN DOE 0712xxx"
-    m = re.search(r'(?:to)\s+([A-Z\s]{3,})', d, re.IGNORECASE)
+    # Case 3: Send Money - "Sent to JOHN DOE"
+    m = re.search(r'(?:to)\s+([A-Z\s]{3,})(?:\s+\d+|$)', d, re.IGNORECASE)
     if m:
         name = m.group(1).strip()
         if len(name) > 3 and not name.isdigit() and 'ACCOUNT' not in name:
