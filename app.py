@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.2")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -77,53 +77,51 @@ def get_in_out(amount):
 def parse_mpesa_text(full_text):
     data = []
     lines = [l.strip() for l in full_text.split('\n') if l.strip()]
-    raw_transactions = []
-
-    # FIXED PATTERN: (.+?) is now greedy and DOTALL captures multi-line details
-    pattern = re.compile(
-        r'([A-Z0-9]{10})\s+' # TXID
-        r'(\d{4}-\d{2}-\d{2})\s+' # Date
-        r'(\d{2}:\d{2}:\d{2})\s+' # Time
-        r'(.+?)' # Details - captures everything until amount
-        r'\s+(-?[\d,]+\.?\d+)\s+' # Amount
-        r'([\d,]+\.?\d+)$', # Balance
-        re.DOTALL | re.IGNORECASE
-    )
-
-    buffer = ""
+    
+    # NEW LOGIC: Split by TXID blocks
+    txid_pattern = re.compile(r'^([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})')
+    
+    current_block = []
     for line in lines:
-        buffer += " " + line # keep appending lines
-        match = pattern.search(buffer)
-        if match:
-            txid = match.group(1)
-            dt = f"{match.group(2)} {match.group(3)}"
-            details = match.group(4).strip()
-            amount = clean_amount(match.group(5))
-            raw_transactions.append({'key': f"{txid}_{dt}", 'txid': txid, 'dt': dt, 'details': details, 'amount': amount})
-            buffer = "" # reset only after we found a complete transaction
+        if txid_pattern.match(line): # New transaction starts
+            if current_block: # process previous block
+                data.extend(process_block(current_block))
+            current_block = [line]
+        else:
+            current_block.append(line)
+    
+    if current_block: # process last block
+        data.extend(process_block(current_block))
+        
+    return data
 
-    txid_groups = {}
-    for t in raw_transactions: txid_groups.setdefault(t['key'], []).append(t)
-
-    for key, items in txid_groups.items():
-        dt, txid = items[0]['dt'], items[0]['txid']
-        has_fuliza = any('fuliza' in i['details'].lower() or 'overdraft' in i['details'].lower() for i in items)
-        group = {'has_fuliza': has_fuliza}
-        has_borrow = any('overdraft' in i['details'].lower() and 'credit party' in i['details'].lower() for i in items)
-        has_withdraw = any('withdraw' in i['details'].lower() and 'agent' in i['details'].lower() for i in items)
-
-        if has_borrow and has_withdraw:
-            for i in items:
-                paid_in, withdrawn = get_in_out(i['amount'])
-                cat = categorize(i['details'], group)
-                data.append([dt, f"{txid} | {clean_details(i['details'])}", paid_in, withdrawn, cat, "M-PESA"])
-            continue
-
-        combined_details = f"{txid} | {' | '.join([clean_details(i['details']) for i in items])}"
-        main_amount = max([i['amount'] for i in items], key=abs) if items else 0.0
-        cat = categorize(combined_details, group)
-        paid_in, withdrawn = get_in_out(main_amount)
-        data.append([dt, combined_details, paid_in, withdrawn, cat, "M-PESA"])
+def process_block(block_lines):
+    data = []
+    full_block = " ".join(block_lines)
+    
+    # Extract TXID, Date, Time from first line
+    header_match = re.match(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})', full_block)
+    if not header_match: return []
+    
+    txid = header_match.group(1)
+    dt = f"{header_match.group(2)} {header_match.group(3)}"
+    
+    # Extract Amount and Balance: they are always the last 2 numbers
+    amounts = re.findall(r'-?[\d,]+\.?\d+', full_block)
+    if len(amounts) < 2: return []
+    
+    amount = clean_amount(amounts[-2])
+    # details = everything between time and the last 2 amounts
+    details_part = full_block[header_match.end():]
+    details_part = re.sub(r'-?[\d,]+\.?\d+\s+-?[\d,]+\.?\d+\s*$', '', details_part).strip()
+    details = clean_details(details_part)
+    
+    has_fuliza = 'fuliza' in details.lower() or 'overdraft' in details.lower()
+    group = {'has_fuliza': has_fuliza}
+    cat = categorize(details, group)
+    paid_in, withdrawn = get_in_out(amount)
+    
+    data.append([dt, f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
     return data
 
 @st.cache_data(show_spinner=False, ttl=3600)
