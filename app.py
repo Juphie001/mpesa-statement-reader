@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.4")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.6")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -41,64 +41,22 @@ def clean_amount(x):
 
 def clean_details(d):
     d = str(d)
-    # 1. Keep "Completed" but remove the amount after it: "Completed-61.00" -> "Completed"
     d = re.sub(r'Completed[-\s]*[\d,]+\.?\d*$', 'Completed', d, flags=re.IGNORECASE)
-    # 2. Collapse multiple spaces but keep the structure
     d = re.sub(r'\s+', ' ', d).strip()
     return d
-
-def extract_merchant(details):
-    d = str(details)
-    
-    # Case 1: Pay Bill with number - "to 4104151 - ONFON MOBILELIMITED PB Acc."
-    # Handles multi-line with re.DOTALL
-    m = re.search(r'(?:to|for)\s*\d+\s*-\s*([A-Z0-9\s\.\&\-]+?)(?:\s+PB\s+Acc\.|\s+ACC\.|\s+ACCOUNT|\s+Completed|$)', d, re.IGNORECASE | re.DOTALL)
-    if m:
-        name = m.group(1).strip().replace('\n',' ').replace(' ',' ')
-        return name
-
-    # Case 2: Till - "Buy Goods to 123456 - SAFARICOM LIMITED"
-    m = re.search(r'(?:to)\s*\d+\s*-\s*([A-Z0-9\s\.\&\-]+)', d, re.IGNORECASE | re.DOTALL)
-    if m:
-        name = m.group(1).strip().replace('\n',' ').replace(' ',' ')
-        return name
-
-    # Case 3: Send Money - "Sent to JOHN DOE"
-    m = re.search(r'(?:to)\s+([A-Z\s]{3,})(?:\s+\d+|$)', d, re.IGNORECASE)
-    if m:
-        name = m.group(1).strip()
-        if len(name) > 3 and not name.isdigit() and 'ACCOUNT' not in name:
-            return name
-
-    return ""
 
 def categorize(details, txid_group):
     d = clean_details(details).lower()
     has_fuliza = txid_group.get('has_fuliza', False) or 'fuliza' in d or 'overdraft' in d
-
-    # ===== LOAN KEYWORDS =====
     loan_keywords = ['loan', 'promotion payment', 'disbursement', 'facility', 'credit']
     bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa', 'simplepay', 'eclof', 'tala', 'branch', 'fairmoney', 'okash', 'kopa', 'tower sacco']
     b2c_api = 'via api' in d and 'original conversation id' in d
-    # =========================
-
-    # 1. LOAN DISBURSEMENT = Money coming IN
-    if any(k in d for k in loan_keywords) and b2c_api:
-        return 'Loan Disbursement'
-    if any(bank in d for bank in bank_loan_senders) and 'payment from' in d and b2c_api:
-        return 'Loan Disbursement'
-    if 'payment from' in d and b2c_api and not 'business payment fr' in d:
-        return 'Loan Disbursement'
-
-    # 2. LOAN REPAYMENT = Money going OUT
-    if any(k in d for k in loan_keywords) and 'pay bill' in d:
-        return 'Loan Repayment'
-    if any(bank in d for bank in bank_loan_senders) and 'pay bill' in d:
-        return 'Loan Repayment'
-    if 'od loan' in d or 'repayment' in d or d == "":
-        return 'Fuliza Repayment'
-
-    # ===== REST OF EXISTING RULES =====
+    if any(k in d for k in loan_keywords) and b2c_api: return 'Loan Disbursement'
+    if any(bank in d for bank in bank_loan_senders) and 'payment from' in d and b2c_api: return 'Loan Disbursement'
+    if 'payment from' in d and b2c_api and not 'business payment fr' in d: return 'Loan Disbursement'
+    if any(k in d for k in loan_keywords) and 'pay bill' in d: return 'Loan Repayment'
+    if any(bank in d for bank in bank_loan_senders) and 'pay bill' in d: return 'Loan Repayment'
+    if 'od loan' in d or 'repayment' in d or d == "": return 'Fuliza Repayment'
     if 'bank' in d and 'business payment fr' in d and 'api' in d: return 'Business Payment Received - Fuliza' if has_fuliza else 'Business Payment Received'
     if 'airtime' in d: return 'Airtime - Fuliza' if has_fuliza else 'Airtime'
     if has_fuliza and ('merchant payment' in d or 'buy goods' in d or 'customer payment to small' in d): return 'Till Payment - Fuliza'
@@ -127,22 +85,18 @@ def parse_mpesa_text(full_text):
     data = []
     lines = [l.strip() for l in full_text.split('\n') if l.strip()]
     raw_transactions = []
-    buffer = []
-
+    pattern = re.compile(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.*?)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$')
+    buffer = ""
     for line in lines:
-        buffer.append(line)
-
-        for i in range(1, min(5, len(buffer)+1)):
-            test_text = " ".join(buffer[-i:])
-
-            match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', test_text)
-            if match:
-                txid, dt = match.group(1), f"{match.group(2)} {match.group(3)}"
-                details, amount = match.group(4).strip(), clean_amount(match.group(5))
-                raw_transactions.append({'key': f"{txid}_{dt}", 'txid': txid, 'dt': dt, 'details': details, 'amount': amount})
-                buffer = []
-                break
-
+        buffer += " " + line
+        match = pattern.search(buffer)
+        if match:
+            txid = match.group(1)
+            dt = f"{match.group(2)} {match.group(3)}"
+            details = match.group(4).strip()
+            amount = clean_amount(match.group(5))
+            raw_transactions.append({'key': f"{txid}_{dt}", 'txid': txid, 'dt': dt, 'details': details, 'amount': amount})
+            buffer = ""
     txid_groups = {}
     for t in raw_transactions: txid_groups.setdefault(t['key'], []).append(t)
     for key, items in txid_groups.items():
@@ -154,16 +108,14 @@ def parse_mpesa_text(full_text):
         if has_borrow and has_withdraw:
             for i in items:
                 paid_in, withdrawn = get_in_out(i['amount'])
-                merchant = extract_merchant(i['details'])
                 cat = categorize(i['details'], group)
-                data.append([dt, f"{txid} | {clean_details(i['details'])}", merchant, paid_in, withdrawn, cat, "M-PESA"])
+                data.append([dt, f"{txid} | {clean_details(i['details'])}", paid_in, withdrawn, cat, "M-PESA"])
             continue
         combined_details = f"{txid} | {' | '.join([clean_details(i['details']) for i in items])}"
-        merchant = extract_merchant(combined_details)
         main_amount = max([i['amount'] for i in items], key=abs) if items else 0.0
         cat = categorize(combined_details, group)
         paid_in, withdrawn = get_in_out(main_amount)
-        data.append([dt, combined_details, merchant, paid_in, withdrawn, cat, "M-PESA"])
+        data.append([dt, combined_details, paid_in, withdrawn, cat, "M-PESA"])
     return data
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -173,12 +125,11 @@ def load_and_process(file_bytes, file_type):
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         for _, row in df_raw.iterrows():
             details = str(row.get('Details', ''))
-            merchant = extract_merchant(details)
             raw_amount = clean_amount(row.get('Amount', clean_amount(row.get('Paid In', 0)) - clean_amount(row.get('Withdrawn', 0))))
             group = {'has_fuliza': 'fuliza' in details.lower() or 'overdraft' in details.lower()}
             cat = categorize(details, group)
             paid_in, withdrawn = get_in_out(raw_amount)
-            data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", merchant, paid_in, withdrawn, cat, "M-PESA"])
+            data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
     else:
         full_text = ""
         try:
@@ -204,16 +155,12 @@ def load_and_process(file_bytes, file_type):
                 gc.collect()
             progress_placeholder.empty()
         data = parse_mpesa_text(full_text)
-
-    df = pd.DataFrame(data, columns=['Date','Details','Merchant','Paid In','Withdrawn','Category','Source'])
-
-    # DATE FIX: Handle 3 formats
+    df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
     df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
     mask = df['Date'].isna()
     df.loc[mask, 'Date'] = pd.to_datetime(df.loc[mask, 'Date'], format='%d-%m-%Y %H:%M:%S', errors='coerce')
     mask = df['Date'].isna()
     df.loc[mask, 'Date'] = pd.to_datetime(df.loc[mask, 'Date'], dayfirst=True, errors='coerce')
-
     df['Paid In'] = pd.to_numeric(df['Paid In'], downcast='float')
     df['Withdrawn'] = pd.to_numeric(df['Withdrawn'], downcast='float')
     df['Category'] = df['Category'].astype('category')
@@ -222,7 +169,6 @@ def load_and_process(file_bytes, file_type):
 if uploaded_file:
     file_bytes = uploaded_file.getvalue()
     file_type = uploaded_file.name.split('.')[-1].lower()
-
     if 'df' not in st.session_state or st.session_state.get('filename')!= uploaded_file.name:
         with st.spinner("Processing file... This may take 2-3min for large PDFs"):
             df = load_and_process(file_bytes, file_type)
@@ -232,58 +178,44 @@ if uploaded_file:
             st.session_state.summary['Net'] = st.session_state.summary['Paid In'] - st.session_state.summary['Withdrawn']
     else:
         df = st.session_state.df
-
     st.success(f"Found {len(df)} transactions 🎉")
-
-    # ===== LOAN METRICS =====
     loan_in = df[df['Category'] == 'Loan Disbursement']['Paid In'].sum()
     loan_out = df[df['Category'] == 'Loan Repayment']['Withdrawn'].sum() + df[df['Category'] == 'Fuliza Repayment']['Withdrawn'].sum()
-
     col1, col2, col3, col4, col5 = st.columns(5)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
     col2.metric("💸 Money Out", f"KES {df['Withdrawn'].sum():,.2f}")
     col3.metric("📊 Net", f"KES {df['Paid In'].sum() - df['Withdrawn'].sum():,.2f}")
     col4.metric("🏦 Loans Taken", f"KES {loan_in:,.2f}")
     col5.metric("↩️ Loans Repaid", f"KES {loan_out:,.2f}")
-
     st.divider()
     st.subheader("📊 Spending Breakdown by Category")
     st.dataframe(st.session_state.summary.sort_values('Withdrawn', ascending=False), use_container_width=True, hide_index=True)
-
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.sort_values('Date', ascending=False).to_excel(writer, sheet_name='All Transactions', index=False)
         st.session_state.summary.to_excel(writer, sheet_name='Category Summary', index=False)
     st.download_button("⬇️ Download Full Excel Report", output.getvalue(), f"statement_report_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
     st.divider()
     st.subheader("📑 All Transactions")
     col1, col2 = st.columns(2)
-    with col1: search = st.text_input("🔍 Search Details/Merchant")
+    with col1: search = st.text_input("🔍 Search Details")
     with col2:
         cats = sorted(df['Category'].unique())
         cat_filter = st.multiselect("Filter by Category", options=cats, default=[])
-
     df_filtered = df.copy()
-    if search: df_filtered = df_filtered[df_filtered['Details'].str.contains(search, case=False, na=False) | df_filtered['Merchant'].str.contains(search, case=False, na=False)]
+    if search: df_filtered = df_filtered[df_filtered['Details'].str.contains(search, case=False, na=False)]
     if cat_filter: df_filtered = df_filtered[df_filtered['Category'].isin(cat_filter)]
-
-    # ===== PAGINATION ONLY =====
     colA, colB = st.columns([1,3])
     with colA:
         page_size = st.selectbox("Rows per page", [100, 200, 500], index=1)
     total_pages = max(1, (len(df_filtered) - 1) // page_size + 1)
     with colB:
         page_number = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
-
     start_idx = (page_number - 1) * page_size
     end_idx = start_idx + page_size
-
     st.info(f"Showing rows {start_idx+1} to {min(end_idx, len(df_filtered))} of {len(df_filtered)}")
     df_display = df_filtered.sort_values('Date', ascending=False).iloc[start_idx:end_idx]
     st.dataframe(df_display, use_container_width=True, hide_index=True)
-    # ===========================
-
     csv = df_filtered.to_csv(index=False).encode()
     st.download_button("⬇️ Download Filtered CSV", csv, f"filtered_statement_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
 else:
