@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.1g")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.2")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -42,6 +42,27 @@ def clean_amount(x):
 def clean_details(d):
     # Only remove "Completed -123.00" at the end. Keep Paybill names
     return re.sub(r'\s*Completed[-\s]*[\d,]+\.?\d*$', '', str(d), flags=re.IGNORECASE).strip()
+
+def extract_merchant(details):
+    d = str(details)
+    # Case 1: Pay Bill - "M-Pesa to 4104151 - ONFON MOBILELIMITED PB Acc. 42933885"
+    m = re.search(r'(?:to|for)\s*\d+\s*-\s*([A-Z0-9\s\.\&]+?)(?:\s+PB\s+Acc\.|\s+ACC\.|\s+ACCOUNT|$)', d, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Case 2: Till - "Buy Goods to 123456 - SAFARICOM LIMITED"
+    m = re.search(r'(?:to)\s*\d+\s*-\s*([A-Z0-9\s\.\&]+)', d, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+
+    # Case 3: Send Money - "Sent to JOHN DOE 0712xxx"
+    m = re.search(r'(?:to)\s+([A-Z\s]{3,})', d, re.IGNORECASE)
+    if m:
+        name = m.group(1).strip()
+        if len(name) > 3 and not name.isdigit() and 'ACCOUNT' not in name:
+            return name
+
+    return ""
 
 def categorize(details, txid_group):
     d = clean_details(details).lower()
@@ -103,17 +124,15 @@ def parse_mpesa_text(full_text):
     for line in lines:
         buffer.append(line)
 
-        # Try matching with last 1 to 4 lines combined
         for i in range(1, min(5, len(buffer)+1)):
             test_text = " ".join(buffer[-i:])
 
-            # Must end with: amount balance
             match = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.+)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', test_text)
             if match:
                 txid, dt = match.group(1), f"{match.group(2)} {match.group(3)}"
                 details, amount = match.group(4).strip(), clean_amount(match.group(5))
                 raw_transactions.append({'key': f"{txid}_{dt}", 'txid': txid, 'dt': dt, 'details': details, 'amount': amount})
-                buffer = [] # reset buffer after we got a full match
+                buffer = []
                 break
 
     txid_groups = {}
@@ -127,14 +146,16 @@ def parse_mpesa_text(full_text):
         if has_borrow and has_withdraw:
             for i in items:
                 paid_in, withdrawn = get_in_out(i['amount'])
+                merchant = extract_merchant(i['details'])
                 cat = categorize(i['details'], group)
-                data.append([dt, f"{txid} | {clean_details(i['details'])}", paid_in, withdrawn, cat, "M-PESA"])
+                data.append([dt, f"{txid} | {clean_details(i['details'])}", merchant, paid_in, withdrawn, cat, "M-PESA"])
             continue
         combined_details = f"{txid} | {' | '.join([clean_details(i['details']) for i in items])}"
+        merchant = extract_merchant(combined_details)
         main_amount = max([i['amount'] for i in items], key=abs) if items else 0.0
         cat = categorize(combined_details, group)
         paid_in, withdrawn = get_in_out(main_amount)
-        data.append([dt, combined_details, paid_in, withdrawn, cat, "M-PESA"])
+        data.append([dt, combined_details, merchant, paid_in, withdrawn, cat, "M-PESA"])
     return data
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -144,11 +165,12 @@ def load_and_process(file_bytes, file_type):
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         for _, row in df_raw.iterrows():
             details = str(row.get('Details', ''))
+            merchant = extract_merchant(details)
             raw_amount = clean_amount(row.get('Amount', clean_amount(row.get('Paid In', 0)) - clean_amount(row.get('Withdrawn', 0))))
             group = {'has_fuliza': 'fuliza' in details.lower() or 'overdraft' in details.lower()}
             cat = categorize(details, group)
             paid_in, withdrawn = get_in_out(raw_amount)
-            data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
+            data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", merchant, paid_in, withdrawn, cat, "M-PESA"])
     else:
         full_text = ""
         try:
@@ -175,7 +197,7 @@ def load_and_process(file_bytes, file_type):
             progress_placeholder.empty()
         data = parse_mpesa_text(full_text)
 
-    df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
+    df = pd.DataFrame(data, columns=['Date','Details','Merchant','Paid In','Withdrawn','Category','Source'])
 
     # DATE FIX: Handle 3 formats
     df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
@@ -229,13 +251,13 @@ if uploaded_file:
     st.divider()
     st.subheader("📑 All Transactions")
     col1, col2 = st.columns(2)
-    with col1: search = st.text_input("🔍 Search Details")
+    with col1: search = st.text_input("🔍 Search Details/Merchant")
     with col2:
         cats = sorted(df['Category'].unique())
         cat_filter = st.multiselect("Filter by Category", options=cats, default=[])
 
     df_filtered = df.copy()
-    if search: df_filtered = df_filtered[df_filtered['Details'].str.contains(search, case=False, na=False)]
+    if search: df_filtered = df_filtered[df_filtered['Details'].str.contains(search, case=False, na=False) | df_filtered['Merchant'].str.contains(search, case=False, na=False)]
     if cat_filter: df_filtered = df_filtered[df_filtered['Category'].isin(cat_filter)]
 
     # ===== PAGINATION ONLY =====
