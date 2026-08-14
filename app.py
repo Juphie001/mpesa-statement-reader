@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.6")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v2.9.7")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -41,6 +41,7 @@ def clean_amount(x):
 
 def clean_details(d):
     d = str(d)
+    # Keep "Completed" but remove the amount after it: "Completed-61.00" -> "Completed"
     d = re.sub(r'Completed[-\s]*[\d,]+\.?\d*$', 'Completed', d, flags=re.IGNORECASE)
     d = re.sub(r'\s+', ' ', d).strip()
     return d
@@ -48,9 +49,11 @@ def clean_details(d):
 def categorize(details, txid_group):
     d = clean_details(details).lower()
     has_fuliza = txid_group.get('has_fuliza', False) or 'fuliza' in d or 'overdraft' in d
+
     loan_keywords = ['loan', 'promotion payment', 'disbursement', 'facility', 'credit']
     bank_loan_senders = ['bank of africa', 'boa', 'kcb', 'equity', 'coop bank', 'stanbic', 'ncba', 'family bank', 'dtb', 'absa', 'simplepay', 'eclof', 'tala', 'branch', 'fairmoney', 'okash', 'kopa', 'tower sacco']
     b2c_api = 'via api' in d and 'original conversation id' in d
+
     if any(k in d for k in loan_keywords) and b2c_api: return 'Loan Disbursement'
     if any(bank in d for bank in bank_loan_senders) and 'payment from' in d and b2c_api: return 'Loan Disbursement'
     if 'payment from' in d and b2c_api and not 'business payment fr' in d: return 'Loan Disbursement'
@@ -155,7 +158,10 @@ def load_and_process(file_bytes, file_type):
                 gc.collect()
             progress_placeholder.empty()
         data = parse_mpesa_text(full_text)
+
+    # NO MERCHANT COLUMN ANYMORE
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
+
     df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
     mask = df['Date'].isna()
     df.loc[mask, 'Date'] = pd.to_datetime(df.loc[mask, 'Date'], format='%d-%m-%Y %H:%M:%S', errors='coerce')
