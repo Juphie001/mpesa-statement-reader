@@ -25,7 +25,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.8")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.9")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -39,9 +39,12 @@ def clean_details(d):
 def categorize(details):
     d = details.lower()
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
+    if 'agent' in d and ('deposit' in d or 'withdraw' in d): return 'Agent Deposit'
+    if 'withdrawal from agent' in d: return 'Agent Withdrawal'
+    if 'fuliza' in d and ('merchant' in d or 'till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
     if 'fuliza' in d: return 'Fuliza'
+    if 'till' in d or 'buy goods' in d or 'merchant payment' in d: return 'Till Payment'
     if 'airtime' in d: return 'Airtime'
-    if 'till' in d or 'buy goods' in d or 'merchant payment' in d: return 'Till Payment' # NEW
     if 'pay bill' in d: return 'Paybill'
     if 'send money' in d: return 'Sent to Person'
     if 'received' in d or 'funds received' in d: return 'Received'
@@ -52,15 +55,14 @@ def categorize(details):
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_and_process(file_bytes, file_type):
     data = []
-    seen_txids = set() # NEW: for TXID dedup
+    seen_txids = set()
 
     if file_type in ['csv', 'xlsx']:
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         for _, row in df_raw.iterrows():
             txid = str(row.get('Receipt No.', ''))
-            if txid in seen_txids: continue # skip duplicate TXID
+            if txid in seen_txids: continue
             seen_txids.add(txid)
-
             details = str(row.get('Details', ''))
             paid_in = clean_amount(row.get('Paid In', 0))
             withdrawn = clean_amount(row.get('Withdrawn', 0))
@@ -81,10 +83,8 @@ def load_and_process(file_bytes, file_type):
         for row in all_rows:
             if len(row) == 7:
                 receipt_no, completion_time, details, status, paid_in, withdrawn, balance = row
-
-                if receipt_no in seen_txids: continue # skip duplicate TXID
+                if receipt_no in seen_txids: continue
                 seen_txids.add(receipt_no)
-
                 paid_in = clean_amount(paid_in)
                 withdrawn = clean_amount(withdrawn)
                 cat = categorize(details)
