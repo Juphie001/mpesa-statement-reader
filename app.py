@@ -3,6 +3,7 @@ import pandas as pd
 import pdfplumber
 import re
 import io
+from collections import defaultdict
 
 st.set_page_config(page_title="Smart Statement Reader", layout="wide")
 st._config.set_option('server.maxUploadSize', 200)
@@ -25,7 +26,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.9")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.0")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -41,54 +42,83 @@ def categorize(details):
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
     if 'agent' in d and ('deposit' in d or 'withdraw' in d): return 'Agent Deposit'
     if 'withdrawal from agent' in d: return 'Agent Withdrawal'
-    if 'fuliza' in d and ('merchant' in d or 'till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
+    if 'merchant customer payment' in d: return 'Received - Till'
+    if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
+    if 'merchant payment' in d: return 'Till Payment'
+    if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
     if 'fuliza' in d: return 'Fuliza'
-    if 'till' in d or 'buy goods' in d or 'merchant payment' in d: return 'Till Payment'
+    if 'till' in d or 'buy goods' in d: return 'Till Payment'
     if 'airtime' in d: return 'Airtime'
     if 'pay bill' in d: return 'Paybill'
     if 'send money' in d: return 'Sent to Person'
     if 'received' in d or 'funds received' in d: return 'Received'
     if 'withdraw' in d: return 'Withdrawal'
     if 'deposit' in d: return 'Deposit'
+    if 'charges' in d: return 'Charges' # NEW
     return 'Other'
+
+def merge_tx_group(rows):
+    """Merge all rows with same TXID into 1 row"""
+    txid = rows[0][0]
+    dt = rows[0][1]
+
+    all_details = []
+    total_in = 0.0
+    total_out = 0.0
+    categories = set()
+
+    for r in rows:
+        details, paid_in, withdrawn = r[2], r[3], r[4]
+        all_details.append(details)
+        total_in += paid_in
+        total_out += withdrawn
+        categories.add(categorize(details))
+
+    # Priority: If any line is Fuliza Repayment, use that. Else if Charges present, add it
+    main_cat = 'Other'
+    if 'Fuliza Repayment' in categories: main_cat = 'Fuliza Repayment'
+    elif 'Till Payment - Fuliza' in categories: main_cat = 'Till Payment - Fuliza'
+    elif 'Till Payment' in categories: main_cat = 'Till Payment'
+    elif 'Received - Till' in categories: main_cat = 'Received - Till'
+    elif 'Fuliza' in categories: main_cat = 'Fuliza'
+    elif 'Charges' in categories: main_cat = 'Charges'
+    else: main_cat = list(categories)[0]
+
+    merged_details = " | ".join(all_details)
+    return [dt, f"{txid} | {clean_details(merged_details)}", total_in, total_out, main_cat, "M-PESA"]
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_and_process(file_bytes, file_type):
-    data = []
-    seen_txids = set()
+    raw_rows = [] # [txid, dt, details, paid_in, withdrawn]
 
     if file_type in ['csv', 'xlsx']:
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         for _, row in df_raw.iterrows():
             txid = str(row.get('Receipt No.', ''))
-            if txid in seen_txids: continue
-            seen_txids.add(txid)
             details = str(row.get('Details', ''))
             paid_in = clean_amount(row.get('Paid In', 0))
             withdrawn = clean_amount(row.get('Withdrawn', 0))
-            cat = categorize(details)
-            data.append([row.get('Completion Time', ''), f"{txid} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
+            raw_rows.append([txid, row.get('Completion Time', ''), details, paid_in, withdrawn])
 
     elif file_type == 'pdf':
-        all_rows = []
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables(table_settings={"text_x_tolerance": 3, "text_y_tolerance": 3})
                 if tables:
                     for table in tables:
                         for row in table[1:]:
-                            if row and row[0]:
-                                all_rows.append(row)
+                            if row and row[0] and len(row) == 7:
+                                receipt_no, completion_time, details, status, paid_in, withdrawn, balance = row
+                                raw_rows.append([receipt_no, completion_time, details, clean_amount(paid_in), clean_amount(withdrawn)])
 
-        for row in all_rows:
-            if len(row) == 7:
-                receipt_no, completion_time, details, status, paid_in, withdrawn, balance = row
-                if receipt_no in seen_txids: continue
-                seen_txids.add(receipt_no)
-                paid_in = clean_amount(paid_in)
-                withdrawn = clean_amount(withdrawn)
-                cat = categorize(details)
-                data.append([completion_time, f"{receipt_no} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
+    # GROUP BY TXID
+    grouped = defaultdict(list)
+    for r in raw_rows:
+        grouped[r[0]].append(r)
+
+    data = []
+    for txid, rows in grouped.items():
+        data.append(merge_tx_group(rows))
 
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
@@ -106,7 +136,7 @@ if uploaded_file:
         st.error("No transactions found.")
         st.stop()
 
-    st.success(f"Found {len(df)} unique transactions 🎉")
+    st.success(f"Found {len(df)} grouped transactions 🎉")
     col1, col2, col3 = st.columns(3)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
     col2.metric("💸 Money Out", f"KES {df['Withdrawn'].sum():,.2f}")
