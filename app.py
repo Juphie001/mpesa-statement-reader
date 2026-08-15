@@ -4,9 +4,6 @@ import pdfplumber
 import re
 import io
 import gc
-from datetime import datetime
-from pdf2image import convert_from_bytes, pdfinfo_from_bytes
-import pytesseract
 
 st.set_page_config(page_title="Smart Statement Reader", layout="wide")
 st._config.set_option('server.maxUploadSize', 200)
@@ -30,7 +27,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.5")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.7")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -54,84 +51,39 @@ def categorize(details):
     if 'deposit' in d: return 'Deposit'
     return 'Other'
 
-def get_in_out(paid_in, withdrawn):
-    return clean_amount(paid_in), clean_amount(withdrawn)
-
-def parse_mpesa_text(full_text):
-    data = []
-    # This regex matches your table rows even if Details wraps to 3 lines
-    pattern = re.compile(
-        r'([A-Z0-9]{10})\s+' # 1. Receipt No / TXID
-        r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+' # 2. Completion Time
-        r'(.*?)\s+' # 3. Details - non greedy, can wrap
-        r'(Completed|Failed|Pending)\s+' # 4. Status
-        r'([\d,]+\.?\d*|)\s+' # 5. Paid In - can be empty
-        r'([\d,]+\.?\d*|)\s+' # 6. Withdrawn - can be empty
-        r'([\d,]+\.?\d+)' # 7. Balance
-   , re.DOTALL) # DOTALL allows. to match newlines for wrapped Details
-
-    for match in pattern.finditer(full_text):
-        txid = match.group(1)
-        dt = match.group(2)
-        details = clean_details(match.group(3))
-        paid_in = match.group(5)
-        withdrawn = match.group(6)
-        
-        paid_in, withdrawn = get_in_out(paid_in, withdrawn)
-        cat = categorize(details)
-        
-        data.append([dt, f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
-    return data
-
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_and_process(file_bytes, file_type):
     data = []
+
     if file_type in ['csv', 'xlsx']:
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         for _, row in df_raw.iterrows():
             details = str(row.get('Details', ''))
-            paid_in, withdrawn = get_in_out(row.get('Paid In', 0), row.get('Withdrawn', 0))
+            paid_in = clean_amount(row.get('Paid In', 0))
+            withdrawn = clean_amount(row.get('Withdrawn', 0))
             cat = categorize(details)
             data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
-    else:
-        full_text = ""
-        try:
-            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-                for page in pdf.pages:
-                    # Try table extraction first - best for your format
-                    tables = page.extract_tables()
-                    if tables:
-                        for table in tables:
-                            for row in table[1:]: # skip header
-                                if row and row[0]:
-                                    data.append(row)
-                    else: # fallback to text
-                        text = page.extract_text()
-                        if text: full_text += "\n" + text
-        except: pass
-        
-        # If we got tables, convert them. If not, use regex on text
-        if data and isinstance(data[0], list) and len(data[0]) == 7:
-            df_temp = []
-            for row in data:
-                txid, dt, details, status, paid_in, withdrawn, balance = row
-                paid_in, withdrawn = get_in_out(paid_in, withdrawn)
+
+    elif file_type == 'pdf':
+        all_rows = []
+        with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+            for page in pdf.pages:
+                tables = page.extract_tables(table_settings={"text_x_tolerance": 3, "text_y_tolerance": 3})
+                if tables:
+                    for table in tables:
+                        # Skip header row
+                        for row in table[1:]:
+                            if row and row[0]: # skip empty rows
+                                all_rows.append(row)
+
+        # Convert 7 columns to our 6 columns
+        for row in all_rows:
+            if len(row) == 7:
+                receipt_no, completion_time, details, status, paid_in, withdrawn, balance = row
+                paid_in = clean_amount(paid_in)
+                withdrawn = clean_amount(withdrawn)
                 cat = categorize(details)
-                df_temp.append([dt, f"{txid} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
-            data = df_temp
-        elif full_text:
-            if len(full_text.strip()) < 50: # OCR fallback
-                info = pdfinfo_from_bytes(file_bytes)
-                total_pages = info["Pages"]
-                for start in range(1, total_pages + 1, 2):
-                    end = min(start + 1, total_pages)
-                    images = convert_from_bytes(file_bytes, dpi=150, first_page=start, last_page=end)
-                    for image in images:
-                        text = pytesseract.image_to_string(image)
-                        if text: full_text += "\n" + text
-                        image.close()
-                    gc.collect()
-            data = parse_mpesa_text(full_text)
+                data.append([completion_time, f"{receipt_no} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
 
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
@@ -144,7 +96,11 @@ if uploaded_file:
     file_type = uploaded_file.name.split('.')[-1].lower()
     with st.spinner("Processing file..."):
         df = load_and_process(file_bytes, file_type)
-    
+
+    if df.empty:
+        st.error("No transactions found. Is this an M-PESA PDF with the 7 columns?")
+        st.stop()
+
     st.success(f"Found {len(df)} transactions 🎉")
     col1, col2, col3 = st.columns(3)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
@@ -154,10 +110,10 @@ if uploaded_file:
     st.subheader("📊 Category Summary")
     summary = df.groupby('Category')[['Paid In', 'Withdrawn']].sum().reset_index()
     st.dataframe(summary, use_container_width=True, hide_index=True)
-    
+
     st.subheader("📑 All Transactions")
     st.dataframe(df.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
-    
+
     csv = df.to_csv(index=False).encode()
     st.download_button("⬇️ Download CSV", csv, "statement.csv", mime="text/csv")
 else:
