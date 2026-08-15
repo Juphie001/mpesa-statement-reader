@@ -29,7 +29,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.2-fixed")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.3")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -58,33 +58,24 @@ def get_in_out(amount):
 
 def parse_mpesa_text(full_text):
     data = []
-    txid_pattern = re.compile(r'^([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})')
+    txid_pattern = re.compile(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})')
+    matches = list(txid_pattern.finditer(full_text))
 
-    blocks = []
-    current_block = []
-    for line in full_text.split('\n'):
-        line = line.strip()
-        if not line: continue
-        if txid_pattern.match(line):
-            if current_block: blocks.append(current_block)
-            current_block = [line]
-        else:
-            current_block.append(line)
-    if current_block: blocks.append(current_block)
+    for i, m in enumerate(matches):
+        txid, date, time = m.groups()
+        start = m.start()
+        end = matches[i+1].start() if i+1 < len(matches) else len(full_text)
 
-    for block_lines in blocks:
-        block_text = " ".join(block_lines)
-        header = txid_pattern.match(block_text)
-        if not header: continue
-        txid, date, time = header.groups()
+        block = full_text[start:end].strip()
+        block = re.sub(r'\s+', ' ', block)
 
-        amounts = re.findall(r'-?[\d,]+\.?\d+', block_text)
-        if len(amounts) < 2: continue
+        nums = re.findall(r'-?[\d,]+\.?\d+', block)
+        if len(nums) < 2: continue
 
-        amount = clean_amount(amounts[-2])
-        details_start = header.end()
-        details_end = block_text.rfind(amounts[-2])
-        details = clean_details(block_text[details_start:details_end])
+        amount = clean_amount(nums[-2])
+        details_part = block[m.end():]
+        details_part = details_part.rsplit(nums[-2], 1)[0]
+        details = clean_details(details_part)
 
         cat = categorize(details)
         paid_in, withdrawn = get_in_out(amount)
