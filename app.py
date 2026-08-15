@@ -26,7 +26,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.7")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.8")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -46,9 +46,11 @@ def categorize(details):
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
 
-    # FIX: Fuliza P2P Transfer
-    if 'customer transfer' in d and 'fuliza' in d: return 'Sent to Person'
+    # BUSINESS PAYMENTS
+    if 'customer payment to small business' in d: return 'Received - Business'
+    if 'small business payment to customer' in d: return 'Sent - Business'
 
+    if 'customer transfer' in d and 'fuliza' in d: return 'Sent to Person'
     if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
     if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
     if 'fuliza' in d: return 'Other'
@@ -80,7 +82,8 @@ def merge_tx_group(rows):
 
     main_cat = 'Other'
     priority = ['Fuliza Repayment', 'Till Payment - Fuliza', 'Self Transfer', 'Agent Withdrawal',
-                'Agent Deposit', 'Till Payment', 'Received - Till', 'Sent to Person', 'Charges']
+                'Agent Deposit', 'Received - Business', 'Sent - Business', 'Till Payment',
+                'Received - Till', 'Sent to Person', 'Charges']
     for p in priority:
         if p in categories:
             main_cat = p
