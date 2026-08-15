@@ -26,7 +26,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.6")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.7")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -45,9 +45,13 @@ def categorize(details):
     if 'withdrawal from agent' in d: return 'Agent Withdrawal'
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
+
+    # FIX: Fuliza P2P Transfer
+    if 'customer transfer' in d and 'fuliza' in d: return 'Sent to Person'
+
     if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
     if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
-    if 'fuliza' in d: return 'Other' # REMOVED STANDALONE FULIZA
+    if 'fuliza' in d: return 'Other'
     if 'merchant customer payment' in d: return 'Received - Till'
     if 'merchant payment' in d: return 'Till Payment'
     if 'till' in d or 'buy goods' in d: return 'Till Payment'
@@ -76,7 +80,7 @@ def merge_tx_group(rows):
 
     main_cat = 'Other'
     priority = ['Fuliza Repayment', 'Till Payment - Fuliza', 'Self Transfer', 'Agent Withdrawal',
-                'Agent Deposit', 'Till Payment', 'Received - Till', 'Charges']
+                'Agent Deposit', 'Till Payment', 'Received - Till', 'Sent to Person', 'Charges']
     for p in priority:
         if p in categories:
             main_cat = p
@@ -147,10 +151,9 @@ if uploaded_file:
 
     st.subheader("📑 All Transactions")
 
-    # PAGINATION CONTROLS - Default 200
     col_a, col_b, col_c = st.columns([2,2,1])
     with col_a:
-        rows_per_page = st.selectbox("Rows per page", [50, 100, 200, 500], index=2) # 200 default
+        rows_per_page = st.selectbox("Rows per page", [50, 100, 200, 500], index=2)
     with col_b:
         total_pages = max(1, (len(df) - 1) // rows_per_page + 1)
         page_number = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
