@@ -18,7 +18,6 @@ def check_password():
     if "password_correct" not in st.session_state:
         st.title("🔒 Smart Statement Reader")
         st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
-        st.caption("This app is private. Contact owner for access.")
         st.stop()
     elif not st.session_state["password_correct"]:
         st.title("🔒 Smart Statement Reader")
@@ -27,7 +26,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.2")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.6")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -40,32 +39,18 @@ def clean_details(d):
 
 def categorize(details):
     d = details.lower()
-
-    # 1. Self Transfer - Biz to Personal
     if 'small business withdrawal' in d and 'to mpesa account' in d: return 'Self Transfer'
     if 'business account to mpesa' in d: return 'Self Transfer'
-    if 'withdrawal from business account' in d: return 'Self Transfer'
-
-    # 2. Agent Withdrawal - FIXED: catch "at agent" + "withdrawal"
     if 'withdrawal' in d and 'agent' in d: return 'Agent Withdrawal'
     if 'withdrawal from agent' in d: return 'Agent Withdrawal'
-    if 'agent withdrawal' in d: return 'Agent Withdrawal'
-
-    # 3. Agent Deposit
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
-
-    # 4. Fuliza / Repayment
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
     if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
     if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
-    if 'fuliza' in d: return 'Fuliza'
-
-    # 5. Merchant / Till
+    if 'fuliza' in d: return 'Other' # REMOVED STANDALONE FULIZA
     if 'merchant customer payment' in d: return 'Received - Till'
     if 'merchant payment' in d: return 'Till Payment'
     if 'till' in d or 'buy goods' in d: return 'Till Payment'
-
-    # 6. Others
     if 'airtime' in d: return 'Airtime'
     if 'pay bill' in d: return 'Paybill'
     if 'send money' in d: return 'Sent to Person'
@@ -76,15 +61,12 @@ def categorize(details):
     return 'Other'
 
 def merge_tx_group(rows):
-    """Merge all rows with same TXID into 1 row"""
     txid = rows[0][0]
     dt = rows[0][1]
-
     all_details = []
     total_in = 0.0
     total_out = 0.0
     categories = set()
-
     for r in rows:
         details, paid_in, withdrawn = r[2], r[3], r[4]
         all_details.append(details)
@@ -92,10 +74,9 @@ def merge_tx_group(rows):
         total_out += withdrawn
         categories.add(categorize(details))
 
-    # Priority for main category
     main_cat = 'Other'
     priority = ['Fuliza Repayment', 'Till Payment - Fuliza', 'Self Transfer', 'Agent Withdrawal',
-                'Agent Deposit', 'Till Payment', 'Received - Till', 'Fuliza', 'Charges']
+                'Agent Deposit', 'Till Payment', 'Received - Till', 'Charges']
     for p in priority:
         if p in categories:
             main_cat = p
@@ -108,8 +89,7 @@ def merge_tx_group(rows):
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_and_process(file_bytes, file_type):
-    raw_rows = [] # [txid, dt, details, paid_in, withdrawn]
-
+    raw_rows = []
     if file_type in ['csv', 'xlsx']:
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         for _, row in df_raw.iterrows():
@@ -118,7 +98,6 @@ def load_and_process(file_bytes, file_type):
             paid_in = clean_amount(row.get('Paid In', 0))
             withdrawn = clean_amount(row.get('Withdrawn', 0))
             raw_rows.append([txid, row.get('Completion Time', ''), details, paid_in, withdrawn])
-
     elif file_type == 'pdf':
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             for page in pdf.pages:
@@ -130,7 +109,6 @@ def load_and_process(file_bytes, file_type):
                                 receipt_no, completion_time, details, status, paid_in, withdrawn, balance = row
                                 raw_rows.append([receipt_no, completion_time, details, clean_amount(paid_in), clean_amount(withdrawn)])
 
-    # GROUP BY TXID to capture charges + fuliza lines
     grouped = defaultdict(list)
     for r in raw_rows:
         grouped[r[0]].append(r)
@@ -155,6 +133,8 @@ if uploaded_file:
         st.error("No transactions found.")
         st.stop()
 
+    df = df.sort_values('Date', ascending=False).reset_index(drop=True)
+
     st.success(f"Found {len(df)} grouped transactions 🎉")
     col1, col2, col3 = st.columns(3)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
@@ -166,9 +146,25 @@ if uploaded_file:
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
     st.subheader("📑 All Transactions")
-    st.dataframe(df.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
+
+    # PAGINATION CONTROLS - Default 200
+    col_a, col_b, col_c = st.columns([2,2,1])
+    with col_a:
+        rows_per_page = st.selectbox("Rows per page", [50, 100, 200, 500], index=2) # 200 default
+    with col_b:
+        total_pages = max(1, (len(df) - 1) // rows_per_page + 1)
+        page_number = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
+    with col_c:
+        st.metric("Total Pages", total_pages)
+
+    start_idx = (page_number - 1) * rows_per_page
+    end_idx = start_idx + rows_per_page
+    df_page = df.iloc[start_idx:end_idx]
+
+    st.caption(f"Showing {start_idx + 1} - {min(end_idx, len(df))} of {len(df)} transactions")
+    st.dataframe(df_page, use_container_width=True, hide_index=True)
 
     csv = df.to_csv(index=False).encode()
-    st.download_button("⬇️ Download CSV", csv, "statement.csv", mime="text/csv")
+    st.download_button("⬇️ Download Full CSV", csv, "statement.csv", mime="text/csv")
 else:
     st.info("👆 Upload your M-PESA statement to get started")
