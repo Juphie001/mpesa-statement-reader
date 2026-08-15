@@ -21,7 +21,6 @@ def check_password():
     if "password_correct" not in st.session_state:
         st.title("🔒 Smart Statement Reader")
         st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
-        st.caption("This app is private. Contact owner for access.")
         st.stop()
     elif not st.session_state["password_correct"]:
         st.title("🔒 Smart Statement Reader")
@@ -30,7 +29,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.1")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.2-fixed")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -43,11 +42,7 @@ def clean_details(d):
 
 def categorize(details):
     d = details.lower()
-    
-    # NEW: Catch OD Loan Repayment first
-    if 'od loan' in d and 'repayment' in d:
-        return 'Fuliza Repayment'
-        
+    if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
     if 'fuliza' in d: return 'Fuliza'
     if 'airtime' in d: return 'Airtime'
     if 'till' in d or 'buy goods' in d: return 'Till Payment'
@@ -63,41 +58,38 @@ def get_in_out(amount):
 
 def parse_mpesa_text(full_text):
     data = []
-    lines = full_text.split('\n')
     txid_pattern = re.compile(r'^([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})')
 
+    blocks = []
     current_block = []
-    for line in lines:
+    for line in full_text.split('\n'):
         line = line.strip()
         if not line: continue
-
         if txid_pattern.match(line):
-            # process previous block
-            if current_block:
-                block = " ".join(current_block)
-                m = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.*?)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', block)
-                if m:
-                    txid, date, time, details, amount, _ = m.groups()
-                    details = clean_details(details)
-                    amount = clean_amount(amount)
-                    cat = categorize(details)
-                    paid_in, withdrawn = get_in_out(amount)
-                    data.append([f"{date} {time}", f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
+            if current_block: blocks.append(current_block)
             current_block = [line]
         else:
             current_block.append(line)
+    if current_block: blocks.append(current_block)
 
-    # process last block
-    if current_block:
-        block = " ".join(current_block)
-        m = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.*?)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', block)
-        if m:
-            txid, date, time, details, amount, _ = m.groups()
-            details = clean_details(details)
-            amount = clean_amount(amount)
-            cat = categorize(details)
-            paid_in, withdrawn = get_in_out(amount)
-            data.append([f"{date} {time}", f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
+    for block_lines in blocks:
+        block_text = " ".join(block_lines)
+        header = txid_pattern.match(block_text)
+        if not header: continue
+        txid, date, time = header.groups()
+
+        amounts = re.findall(r'-?[\d,]+\.?\d+', block_text)
+        if len(amounts) < 2: continue
+
+        amount = clean_amount(amounts[-2])
+        details_start = header.end()
+        details_end = block_text.rfind(amounts[-2])
+        details = clean_details(block_text[details_start:details_end])
+
+        cat = categorize(details)
+        paid_in, withdrawn = get_in_out(amount)
+        data.append([f"{date} {time}", f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
+
     return data
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -143,7 +135,7 @@ if uploaded_file:
     file_type = uploaded_file.name.split('.')[-1].lower()
     with st.spinner("Processing file..."):
         df = load_and_process(file_bytes, file_type)
-    
+
     st.success(f"Found {len(df)} transactions 🎉")
     col1, col2, col3 = st.columns(3)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
@@ -153,10 +145,10 @@ if uploaded_file:
     st.subheader("📊 Category Summary")
     summary = df.groupby('Category')[['Paid In', 'Withdrawn']].sum().reset_index()
     st.dataframe(summary, use_container_width=True, hide_index=True)
-    
+
     st.subheader("📑 All Transactions")
     st.dataframe(df.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
-    
+
     csv = df.to_csv(index=False).encode()
     st.download_button("⬇️ Download CSV", csv, "statement.csv", mime="text/csv")
 else:
