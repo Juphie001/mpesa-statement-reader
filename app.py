@@ -31,7 +31,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.5")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -45,29 +45,26 @@ def clean_details(d):
     d = re.sub(r'\s+', ' ', d).strip()
     return d
 
-def categorize(details, txid_group):
-    d = clean_details(details).lower()
-    has_fuliza = txid_group.get('has_fuliza', False) or 'fuliza' in d or 'overdraft' in d
-
-    if 'od loan' in d or 'repayment' in d or d == "": return 'Fuliza Repayment'
-    if 'bank' in d and 'business payment fr' in d and 'api' in d: return 'Business Payment Received - Fuliza' if has_fuliza else 'Business Payment Received'
-    if 'airtime' in d: return 'Airtime - Fuliza' if has_fuliza else 'Airtime'
-    if has_fuliza and ('merchant payment' in d or 'buy goods' in d or 'customer payment to small' in d): return 'Till Payment - Fuliza'
+def categorize(details):
+    d = details.lower()
+    if 'fuliza' in d or 'overdraft' in d:
+        if 'od loan' in d or 'repayment' in d: return 'Fuliza Repayment'
+        if 'overdraft' in d and 'credit party' in d: return 'Fuliza Borrowed'
+        if 'charge' in d or 'fee' in d: return 'Fuliza Interest/Charges'
+        if 'merchant payment' in d or 'buy goods' in d: return 'Till Payment - Fuliza'
+        return 'Fuliza Borrowed'
+    
+    if 'airtime' in d: return 'Airtime'
     if 'customer payment to small' in d or 'merchant payment' in d or 'buy goods' in d: return 'Till Payment'
-    if 'overdraft' in d and 'credit party' in d: return 'Fuliza Borrowed'
-    if has_fuliza and ('charge' in d or 'fee' in d):
-        if 'withdraw' in d: return 'Withdrawal Charge - Fuliza'
-        return 'Fuliza Interest/Charges'
-    if ('small business' in d and 'pay merchant' in d) or ('small business' in d and 'pay to' in d): return 'Business Payment Sent - Fuliza' if has_fuliza else 'Business Payment Sent'
-    if 'micro sme business' in d or 'customer send money to micro' in d or ('small business' in d and 'payment to customer' in d): return 'Business Payment Received - Fuliza' if has_fuliza else 'Business Payment Received'
-    if 'lipa na mpesa business' in d or 'business to business' in d or 'b2b' in d: return 'Business to Business - Fuliza' if has_fuliza else 'Business to Business'
-    if 'business withdrawal' in d: return 'Business Withdrawal - Fuliza' if has_fuliza else 'Business Withdrawal'
-    if 'withdraw' in d and 'agent' in d: return 'Agent Withdrawal - Fuliza' if has_fuliza else 'Agent Withdrawal'
-    if 'deposit' in d and 'agent' in d: return 'Agent Deposit - Fuliza' if has_fuliza else 'Agent Deposit'
-    if 'payment to customer' in d and 'business' not in d: return 'Sent to Person - Fuliza' if has_fuliza else 'Sent to Person'
-    if 'received from' in d or 'funds received from' in d: return 'Received from Person - Fuliza' if has_fuliza else 'Received from Person'
-    if 'pay bill' in d: return 'Paybill - Fuliza' if has_fuliza else 'Paybill'
-    if has_fuliza: return 'Fuliza Borrowed'
+    if ('small business' in d and 'pay merchant' in d) or ('small business' in d and 'pay to' in d): return 'Business Payment Sent'
+    if 'micro sme business' in d or 'customer send money to micro' in d or ('small business' in d and 'payment to customer' in d): return 'Business Payment Received'
+    if 'lipa na mpesa business' in d or 'business to business' in d or 'b2b' in d: return 'Business to Business'
+    if 'business withdrawal' in d: return 'Business Withdrawal'
+    if 'withdraw' in d and 'agent' in d: return 'Agent Withdrawal'
+    if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
+    if 'payment to customer' in d and 'business' not in d: return 'Sent to Person'
+    if 'received from' in d or 'funds received from' in d: return 'Received from Person'
+    if 'pay bill' in d: return 'Paybill'
     if 'deposit' in d and 'agent' not in d: return 'Bank Deposit'
     return 'Other'
 
@@ -76,43 +73,22 @@ def get_in_out(amount):
 
 def parse_mpesa_text(full_text):
     data = []
-    lines = [l.strip() for l in full_text.split('\n') if l.strip()]
-    txid_pattern = re.compile(r'^([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})')
-    
-    current_block = []
-    for line in lines:
-        if txid_pattern.match(line):
-            if current_block: data.extend(process_block(current_block))
-            current_block = [line]
-        else:
-            current_block.append(line)
-    if current_block: data.extend(process_block(current_block))
-    return data
-
-def process_block(block_lines):
-    data = []
-    full_block = " ".join(block_lines)
-    header_match = re.match(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})', full_block)
-    if not header_match: return []
-    
-    txid = header_match.group(1)
-    dt = f"{header_match.group(2)} {header_match.group(3)}"
-    
-    # Find AMOUNT BALANCE at the end, ignores trailing 2547 0 junk
-    amt_bal_match = re.search(r'(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)(?:\s+\d+\s+\d+)?\s*$', full_block)
-    if not amt_bal_match: return []
-    
-    amount = clean_amount(amt_bal_match.group(1))
-    
-    # Details = everything between header and amount
-    details_part = full_block[header_match.end():amt_bal_match.start()].strip()
-    details = clean_details(details_part)
-    
-    has_fuliza = 'fuliza' in details.lower() or 'overdraft' in details.lower()
-    group = {'has_fuliza': has_fuliza}
-    cat = categorize(details, group)
-    paid_in, withdrawn = get_in_out(amount)
-    data.append([dt, f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
+    pattern = re.compile(
+        r'([A-Z0-9]{10})\s+'                      # TXID
+        r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+'  # Date Time
+        r'(.*?)\s+'                               # Details - lazy
+        r'(-?[\d,]+\.?\d+)\s+'                    # Amount
+        r'([\d,]+\.?\d+)'                         # Balance
+    )
+    for match in pattern.finditer(full_text):
+        txid = match.group(1)
+        dt = f"{match.group(2)} {match.group(3)}"
+        details = clean_details(match.group(4))
+        amount = clean_amount(match.group(5))
+        
+        cat = categorize(details)
+        paid_in, withdrawn = get_in_out(amount)
+        data.append([dt, f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
     return data
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -123,8 +99,7 @@ def load_and_process(file_bytes, file_type):
         for _, row in df_raw.iterrows():
             details = str(row.get('Details', ''))
             raw_amount = clean_amount(row.get('Amount', clean_amount(row.get('Paid In', 0)) - clean_amount(row.get('Withdrawn', 0))))
-            group = {'has_fuliza': 'fuliza' in details.lower() or 'overdraft' in details.lower()}
-            cat = categorize(details, group)
+            cat = categorize(details)
             paid_in, withdrawn = get_in_out(raw_amount)
             data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
     else:
@@ -154,12 +129,9 @@ def load_and_process(file_bytes, file_type):
         data = parse_mpesa_text(full_text)
 
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
-
     df['Date'] = pd.to_datetime(df['Date'], format='%Y-%m-%d %H:%M:%S', errors='coerce')
     mask = df['Date'].isna()
     df.loc[mask, 'Date'] = pd.to_datetime(df.loc[mask, 'Date'], format='%d-%m-%Y %H:%M:%S', errors='coerce')
-    mask = df['Date'].isna()
-    df.loc[mask, 'Date'] = pd.to_datetime(df.loc[mask, 'Date'], dayfirst=True, errors='coerce')
     df['Paid In'] = pd.to_numeric(df['Paid In'], downcast='float')
     df['Withdrawn'] = pd.to_numeric(df['Withdrawn'], downcast='float')
     df['Category'] = df['Category'].astype('category')
@@ -169,7 +141,7 @@ if uploaded_file:
     file_bytes = uploaded_file.getvalue()
     file_type = uploaded_file.name.split('.')[-1].lower()
     if 'df' not in st.session_state or st.session_state.get('filename')!= uploaded_file.name:
-        with st.spinner("Processing file... This may take 2-3min for large PDFs"):
+        with st.spinner("Processing file..."):
             df = load_and_process(file_bytes, file_type)
             st.session_state.df = df
             st.session_state.filename = uploaded_file.name
@@ -187,33 +159,18 @@ if uploaded_file:
     st.divider()
     st.subheader("📊 Spending Breakdown by Category")
     st.dataframe(st.session_state.summary.sort_values('Withdrawn', ascending=False), use_container_width=True, hide_index=True)
+    
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.sort_values('Date', ascending=False).to_excel(writer, sheet_name='All Transactions', index=False)
         st.session_state.summary.to_excel(writer, sheet_name='Category Summary', index=False)
-    st.download_button("⬇️ Download Full Excel Report", output.getvalue(), f"statement_report_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("⬇️ Download Full Excel Report", output.getvalue(), f"statement_report_{datetime.now().strftime('%Y%m%d')}.xlsx")
+    
     st.divider()
     st.subheader("📑 All Transactions")
-    col1, col2 = st.columns(2)
-    with col1: search = st.text_input("🔍 Search Details")
-    with col2:
-        cats = sorted(df['Category'].unique())
-        cat_filter = st.multiselect("Filter by Category", options=cats, default=[])
+    search = st.text_input("🔍 Search Details")
     df_filtered = df.copy()
     if search: df_filtered = df_filtered[df_filtered['Details'].str.contains(search, case=False, na=False)]
-    if cat_filter: df_filtered = df_filtered[df_filtered['Category'].isin(cat_filter)]
-    colA, colB = st.columns([1,3])
-    with colA:
-        page_size = st.selectbox("Rows per page", [100, 200, 500], index=1)
-    total_pages = max(1, (len(df_filtered) - 1) // page_size + 1)
-    with colB:
-        page_number = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
-    start_idx = (page_number - 1) * page_size
-    end_idx = start_idx + page_size
-    st.info(f"Showing rows {start_idx+1} to {min(end_idx, len(df_filtered))} of {len(df_filtered)}")
-    df_display = df_filtered.sort_values('Date', ascending=False).iloc[start_idx:end_idx]
-    st.dataframe(df_display, use_container_width=True, hide_index=True)
-    csv = df_filtered.to_csv(index=False).encode()
-    st.download_button("⬇️ Download Filtered CSV", csv, f"filtered_statement_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
+    st.dataframe(df_filtered.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
 else:
     st.info("👆 Upload your M-PESA statement to get started")
