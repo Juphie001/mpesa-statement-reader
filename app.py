@@ -29,7 +29,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.3")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.4")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -38,7 +38,8 @@ def clean_amount(x):
     except: return 0.0
 
 def clean_details(d):
-    return re.sub(r'\s+', ' ', str(d)).strip()
+    d = re.sub(r'\s+', ' ', str(d)).strip()
+    return d[:500] # prevent insanely long details
 
 def categorize(details):
     d = details.lower()
@@ -61,21 +62,28 @@ def parse_mpesa_text(full_text):
     txid_pattern = re.compile(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})')
     matches = list(txid_pattern.finditer(full_text))
 
-    for i, m in enumerate(matches):
-        txid, date, time = m.groups()
-        start = m.start()
+    for i in range(len(matches)):
+        txid, date, time = matches[i].groups()
+        start = matches[i].start()
         end = matches[i+1].start() if i+1 < len(matches) else len(full_text)
+        block = full_text[start:end]
 
-        block = full_text[start:end].strip()
-        block = re.sub(r'\s+', ' ', block)
+        # Join all lines in block to 1 line
+        block_one_line = re.sub(r'\s+', ' ', block).strip()
 
-        nums = re.findall(r'-?[\d,]+\.?\d+', block)
-        if len(nums) < 2: continue
+        # Find all money values
+        nums = re.findall(r'-?[\d,]+\.?\d+', block_one_line)
+        if len(nums) < 2: 
+            continue # skip if no amount/balance
 
-        amount = clean_amount(nums[-2])
-        details_part = block[m.end():]
-        details_part = details_part.rsplit(nums[-2], 1)[0]
-        details = clean_details(details_part)
+        amount = clean_amount(nums[-2]) # second last is transaction amount
+
+        # Details = everything between datetime and the amount
+        parts = block_one_line.split(nums[-2])
+        details = parts[0]
+        # Remove TXID Date Time from start of details
+        details = re.sub(r'^[A-Z0-9]{10}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*', '', details)
+        details = clean_details(details)
 
         cat = categorize(details)
         paid_in, withdrawn = get_in_out(amount)
