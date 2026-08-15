@@ -63,22 +63,41 @@ def get_in_out(amount):
 
 def parse_mpesa_text(full_text):
     data = []
-    pattern = re.compile(
-        r'([A-Z0-9]{10})\s+'                      # TXID
-        r'(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+'  # Date Time
-        r'(.*?)\s+'                               # Details
-        r'(-?[\d,]+\.?\d+)\s+'                    # Amount
-        r'([\d,]+\.?\d+)'                         # Balance
-    )
-    for match in pattern.finditer(full_text):
-        txid = match.group(1)
-        dt = f"{match.group(2)} {match.group(3)}"
-        details = clean_details(match.group(4))
-        amount = clean_amount(match.group(5))
-        
-        cat = categorize(details)
-        paid_in, withdrawn = get_in_out(amount)
-        data.append([dt, f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
+    lines = full_text.split('\n')
+    txid_pattern = re.compile(r'^([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})')
+
+    current_block = []
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+
+        if txid_pattern.match(line):
+            # process previous block
+            if current_block:
+                block = " ".join(current_block)
+                m = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.*?)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', block)
+                if m:
+                    txid, date, time, details, amount, _ = m.groups()
+                    details = clean_details(details)
+                    amount = clean_amount(amount)
+                    cat = categorize(details)
+                    paid_in, withdrawn = get_in_out(amount)
+                    data.append([f"{date} {time}", f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
+            current_block = [line]
+        else:
+            current_block.append(line)
+
+    # process last block
+    if current_block:
+        block = " ".join(current_block)
+        m = re.search(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})\s+(.*?)\s+(-?[\d,]+\.?\d+)\s+([\d,]+\.?\d+)$', block)
+        if m:
+            txid, date, time, details, amount, _ = m.groups()
+            details = clean_details(details)
+            amount = clean_amount(amount)
+            cat = categorize(details)
+            paid_in, withdrawn = get_in_out(amount)
+            data.append([f"{date} {time}", f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
     return data
 
 @st.cache_data(show_spinner=False, ttl=3600)
