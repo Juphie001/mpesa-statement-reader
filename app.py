@@ -18,6 +18,7 @@ def check_password():
     if "password_correct" not in st.session_state:
         st.title("🔒 Smart Statement Reader")
         st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
+        st.caption("This app is private. Contact owner for access.")
         st.stop()
     elif not st.session_state["password_correct"]:
         st.title("🔒 Smart Statement Reader")
@@ -26,7 +27,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.0")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.2")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -39,22 +40,39 @@ def clean_details(d):
 
 def categorize(details):
     d = details.lower()
-    if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
-    if 'agent' in d and ('deposit' in d or 'withdraw' in d): return 'Agent Deposit'
+
+    # 1. Self Transfer - Biz to Personal
+    if 'small business withdrawal' in d and 'to mpesa account' in d: return 'Self Transfer'
+    if 'business account to mpesa' in d: return 'Self Transfer'
+    if 'withdrawal from business account' in d: return 'Self Transfer'
+
+    # 2. Agent Withdrawal - FIXED: catch "at agent" + "withdrawal"
+    if 'withdrawal' in d and 'agent' in d: return 'Agent Withdrawal'
     if 'withdrawal from agent' in d: return 'Agent Withdrawal'
-    if 'merchant customer payment' in d: return 'Received - Till'
+    if 'agent withdrawal' in d: return 'Agent Withdrawal'
+
+    # 3. Agent Deposit
+    if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
+
+    # 4. Fuliza / Repayment
+    if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
     if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
-    if 'merchant payment' in d: return 'Till Payment'
     if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
     if 'fuliza' in d: return 'Fuliza'
+
+    # 5. Merchant / Till
+    if 'merchant customer payment' in d: return 'Received - Till'
+    if 'merchant payment' in d: return 'Till Payment'
     if 'till' in d or 'buy goods' in d: return 'Till Payment'
+
+    # 6. Others
     if 'airtime' in d: return 'Airtime'
     if 'pay bill' in d: return 'Paybill'
     if 'send money' in d: return 'Sent to Person'
     if 'received' in d or 'funds received' in d: return 'Received'
     if 'withdraw' in d: return 'Withdrawal'
     if 'deposit' in d: return 'Deposit'
-    if 'charges' in d: return 'Charges' # NEW
+    if 'charges' in d: return 'Charges'
     return 'Other'
 
 def merge_tx_group(rows):
@@ -74,15 +92,16 @@ def merge_tx_group(rows):
         total_out += withdrawn
         categories.add(categorize(details))
 
-    # Priority: If any line is Fuliza Repayment, use that. Else if Charges present, add it
+    # Priority for main category
     main_cat = 'Other'
-    if 'Fuliza Repayment' in categories: main_cat = 'Fuliza Repayment'
-    elif 'Till Payment - Fuliza' in categories: main_cat = 'Till Payment - Fuliza'
-    elif 'Till Payment' in categories: main_cat = 'Till Payment'
-    elif 'Received - Till' in categories: main_cat = 'Received - Till'
-    elif 'Fuliza' in categories: main_cat = 'Fuliza'
-    elif 'Charges' in categories: main_cat = 'Charges'
-    else: main_cat = list(categories)[0]
+    priority = ['Fuliza Repayment', 'Till Payment - Fuliza', 'Self Transfer', 'Agent Withdrawal',
+                'Agent Deposit', 'Till Payment', 'Received - Till', 'Fuliza', 'Charges']
+    for p in priority:
+        if p in categories:
+            main_cat = p
+            break
+    if main_cat == 'Other' and categories:
+        main_cat = list(categories)[0]
 
     merged_details = " | ".join(all_details)
     return [dt, f"{txid} | {clean_details(merged_details)}", total_in, total_out, main_cat, "M-PESA"]
@@ -111,7 +130,7 @@ def load_and_process(file_bytes, file_type):
                                 receipt_no, completion_time, details, status, paid_in, withdrawn, balance = row
                                 raw_rows.append([receipt_no, completion_time, details, clean_amount(paid_in), clean_amount(withdrawn)])
 
-    # GROUP BY TXID
+    # GROUP BY TXID to capture charges + fuliza lines
     grouped = defaultdict(list)
     for r in raw_rows:
         grouped[r[0]].append(r)
