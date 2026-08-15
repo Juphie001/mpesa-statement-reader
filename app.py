@@ -3,7 +3,6 @@ import pandas as pd
 import pdfplumber
 import re
 import io
-import gc
 
 st.set_page_config(page_title="Smart Statement Reader", layout="wide")
 st._config.set_option('server.maxUploadSize', 200)
@@ -18,7 +17,6 @@ def check_password():
     if "password_correct" not in st.session_state:
         st.title("🔒 Smart Statement Reader")
         st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
-        st.caption("This app is private. Contact owner for access.")
         st.stop()
     elif not st.session_state["password_correct"]:
         st.title("🔒 Smart Statement Reader")
@@ -27,7 +25,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.7")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.8")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -43,7 +41,7 @@ def categorize(details):
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
     if 'fuliza' in d: return 'Fuliza'
     if 'airtime' in d: return 'Airtime'
-    if 'till' in d or 'buy goods' in d: return 'Till Payment'
+    if 'till' in d or 'buy goods' in d or 'merchant payment' in d: return 'Till Payment' # NEW
     if 'pay bill' in d: return 'Paybill'
     if 'send money' in d: return 'Sent to Person'
     if 'received' in d or 'funds received' in d: return 'Received'
@@ -54,15 +52,20 @@ def categorize(details):
 @st.cache_data(show_spinner=False, ttl=3600)
 def load_and_process(file_bytes, file_type):
     data = []
+    seen_txids = set() # NEW: for TXID dedup
 
     if file_type in ['csv', 'xlsx']:
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         for _, row in df_raw.iterrows():
+            txid = str(row.get('Receipt No.', ''))
+            if txid in seen_txids: continue # skip duplicate TXID
+            seen_txids.add(txid)
+
             details = str(row.get('Details', ''))
             paid_in = clean_amount(row.get('Paid In', 0))
             withdrawn = clean_amount(row.get('Withdrawn', 0))
             cat = categorize(details)
-            data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
+            data.append([row.get('Completion Time', ''), f"{txid} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
 
     elif file_type == 'pdf':
         all_rows = []
@@ -71,15 +74,17 @@ def load_and_process(file_bytes, file_type):
                 tables = page.extract_tables(table_settings={"text_x_tolerance": 3, "text_y_tolerance": 3})
                 if tables:
                     for table in tables:
-                        # Skip header row
                         for row in table[1:]:
-                            if row and row[0]: # skip empty rows
+                            if row and row[0]:
                                 all_rows.append(row)
 
-        # Convert 7 columns to our 6 columns
         for row in all_rows:
             if len(row) == 7:
                 receipt_no, completion_time, details, status, paid_in, withdrawn, balance = row
+
+                if receipt_no in seen_txids: continue # skip duplicate TXID
+                seen_txids.add(receipt_no)
+
                 paid_in = clean_amount(paid_in)
                 withdrawn = clean_amount(withdrawn)
                 cat = categorize(details)
@@ -98,10 +103,10 @@ if uploaded_file:
         df = load_and_process(file_bytes, file_type)
 
     if df.empty:
-        st.error("No transactions found. Is this an M-PESA PDF with the 7 columns?")
+        st.error("No transactions found.")
         st.stop()
 
-    st.success(f"Found {len(df)} transactions 🎉")
+    st.success(f"Found {len(df)} unique transactions 🎉")
     col1, col2, col3 = st.columns(3)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
     col2.metric("💸 Money Out", f"KES {df['Withdrawn'].sum():,.2f}")
