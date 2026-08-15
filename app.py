@@ -21,6 +21,7 @@ def check_password():
     if "password_correct" not in st.session_state:
         st.title("🔒 Smart Statement Reader")
         st.text_input("Enter Password", type="password", on_change=password_entered, key="password")
+        st.caption("This app is private. Contact owner for access.")
         st.stop()
     elif not st.session_state["password_correct"]:
         st.title("🔒 Smart Statement Reader")
@@ -29,7 +30,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.4")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.3.5")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -38,8 +39,7 @@ def clean_amount(x):
     except: return 0.0
 
 def clean_details(d):
-    d = re.sub(r'\s+', ' ', str(d)).strip()
-    return d[:500] # prevent insanely long details
+    return re.sub(r'\s+', ' ', str(d)).strip()
 
 def categorize(details):
     d = details.lower()
@@ -49,46 +49,38 @@ def categorize(details):
     if 'till' in d or 'buy goods' in d: return 'Till Payment'
     if 'pay bill' in d: return 'Paybill'
     if 'send money' in d: return 'Sent to Person'
-    if 'received' in d: return 'Received'
+    if 'received' in d or 'funds received' in d: return 'Received'
     if 'withdraw' in d: return 'Withdrawal'
     if 'deposit' in d: return 'Deposit'
     return 'Other'
 
-def get_in_out(amount):
-    return (amount, 0.0) if amount > 0 else (0.0, abs(amount))
+def get_in_out(paid_in, withdrawn):
+    return clean_amount(paid_in), clean_amount(withdrawn)
 
 def parse_mpesa_text(full_text):
     data = []
-    txid_pattern = re.compile(r'([A-Z0-9]{10})\s+(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})')
-    matches = list(txid_pattern.finditer(full_text))
+    # This regex matches your table rows even if Details wraps to 3 lines
+    pattern = re.compile(
+        r'([A-Z0-9]{10})\s+' # 1. Receipt No / TXID
+        r'(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+' # 2. Completion Time
+        r'(.*?)\s+' # 3. Details - non greedy, can wrap
+        r'(Completed|Failed|Pending)\s+' # 4. Status
+        r'([\d,]+\.?\d*|)\s+' # 5. Paid In - can be empty
+        r'([\d,]+\.?\d*|)\s+' # 6. Withdrawn - can be empty
+        r'([\d,]+\.?\d+)' # 7. Balance
+   , re.DOTALL) # DOTALL allows. to match newlines for wrapped Details
 
-    for i in range(len(matches)):
-        txid, date, time = matches[i].groups()
-        start = matches[i].start()
-        end = matches[i+1].start() if i+1 < len(matches) else len(full_text)
-        block = full_text[start:end]
-
-        # Join all lines in block to 1 line
-        block_one_line = re.sub(r'\s+', ' ', block).strip()
-
-        # Find all money values
-        nums = re.findall(r'-?[\d,]+\.?\d+', block_one_line)
-        if len(nums) < 2: 
-            continue # skip if no amount/balance
-
-        amount = clean_amount(nums[-2]) # second last is transaction amount
-
-        # Details = everything between datetime and the amount
-        parts = block_one_line.split(nums[-2])
-        details = parts[0]
-        # Remove TXID Date Time from start of details
-        details = re.sub(r'^[A-Z0-9]{10}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*', '', details)
-        details = clean_details(details)
-
+    for match in pattern.finditer(full_text):
+        txid = match.group(1)
+        dt = match.group(2)
+        details = clean_details(match.group(3))
+        paid_in = match.group(5)
+        withdrawn = match.group(6)
+        
+        paid_in, withdrawn = get_in_out(paid_in, withdrawn)
         cat = categorize(details)
-        paid_in, withdrawn = get_in_out(amount)
-        data.append([f"{date} {time}", f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
-
+        
+        data.append([dt, f"{txid} | {details}", paid_in, withdrawn, cat, "M-PESA"])
     return data
 
 @st.cache_data(show_spinner=False, ttl=3600)
@@ -98,30 +90,48 @@ def load_and_process(file_bytes, file_type):
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         for _, row in df_raw.iterrows():
             details = str(row.get('Details', ''))
-            raw_amount = clean_amount(row.get('Amount', 0))
+            paid_in, withdrawn = get_in_out(row.get('Paid In', 0), row.get('Withdrawn', 0))
             cat = categorize(details)
-            paid_in, withdrawn = get_in_out(raw_amount)
             data.append([row.get('Completion Time', ''), f"{row.get('Receipt No.', '')} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
     else:
         full_text = ""
         try:
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                 for page in pdf.pages:
-                    text = page.extract_text()
-                    if text: full_text += "\n" + text
+                    # Try table extraction first - best for your format
+                    tables = page.extract_tables()
+                    if tables:
+                        for table in tables:
+                            for row in table[1:]: # skip header
+                                if row and row[0]:
+                                    data.append(row)
+                    else: # fallback to text
+                        text = page.extract_text()
+                        if text: full_text += "\n" + text
         except: pass
-        if len(full_text.strip()) < 50:
-            info = pdfinfo_from_bytes(file_bytes)
-            total_pages = info["Pages"]
-            for start in range(1, total_pages + 1, 2):
-                end = min(start + 1, total_pages)
-                images = convert_from_bytes(file_bytes, dpi=100, first_page=start, last_page=end)
-                for image in images:
-                    text = pytesseract.image_to_string(image)
-                    if text: full_text += "\n" + text
-                    image.close()
-                gc.collect()
-        data = parse_mpesa_text(full_text)
+        
+        # If we got tables, convert them. If not, use regex on text
+        if data and isinstance(data[0], list) and len(data[0]) == 7:
+            df_temp = []
+            for row in data:
+                txid, dt, details, status, paid_in, withdrawn, balance = row
+                paid_in, withdrawn = get_in_out(paid_in, withdrawn)
+                cat = categorize(details)
+                df_temp.append([dt, f"{txid} | {clean_details(details)}", paid_in, withdrawn, cat, "M-PESA"])
+            data = df_temp
+        elif full_text:
+            if len(full_text.strip()) < 50: # OCR fallback
+                info = pdfinfo_from_bytes(file_bytes)
+                total_pages = info["Pages"]
+                for start in range(1, total_pages + 1, 2):
+                    end = min(start + 1, total_pages)
+                    images = convert_from_bytes(file_bytes, dpi=150, first_page=start, last_page=end)
+                    for image in images:
+                        text = pytesseract.image_to_string(image)
+                        if text: full_text += "\n" + text
+                        image.close()
+                    gc.collect()
+            data = parse_mpesa_text(full_text)
 
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
@@ -134,7 +144,7 @@ if uploaded_file:
     file_type = uploaded_file.name.split('.')[-1].lower()
     with st.spinner("Processing file..."):
         df = load_and_process(file_bytes, file_type)
-
+    
     st.success(f"Found {len(df)} transactions 🎉")
     col1, col2, col3 = st.columns(3)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
@@ -144,10 +154,10 @@ if uploaded_file:
     st.subheader("📊 Category Summary")
     summary = df.groupby('Category')[['Paid In', 'Withdrawn']].sum().reset_index()
     st.dataframe(summary, use_container_width=True, hide_index=True)
-
+    
     st.subheader("📑 All Transactions")
     st.dataframe(df.sort_values('Date', ascending=False), use_container_width=True, hide_index=True)
-
+    
     csv = df.to_csv(index=False).encode()
     st.download_button("⬇️ Download CSV", csv, "statement.csv", mime="text/csv")
 else:
