@@ -26,7 +26,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.9")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.5.0")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -47,7 +47,7 @@ def categorize(details):
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
 
-    # BUSINESS PAYMENTS - FIXED: more flexible matching
+    # BUSINESS PAYMENTS
     if 'customer payment' in d and 'small business' in d: return 'Received - Business'
     if 'small business payment' in d and 'to customer' in d: return 'Sent - Business'
 
@@ -145,9 +145,14 @@ if uploaded_file:
 
     st.success(f"Found {len(df)} grouped transactions 🎉")
     col1, col2, col3 = st.columns(3)
-    col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
-    col2.metric("💸 Money Out", f"KES {df['Withdrawn'].sum():,.2f}")
-    col3.metric("📊 Net", f"KES {df['Paid In'].sum() - df['Withdrawn'].sum():,.2f}")
+
+    total_in = df['Paid In'].sum()
+    total_out = df['Withdrawn'].sum()
+    net = total_in - total_out # FIXED: No more double negative
+
+    col1.metric("💰 Money In", f"KES {total_in:,.2f}")
+    col2.metric("💸 Money Out", f"KES {total_out:,.2f}")
+    col3.metric("📊 Net", f"KES {net:,.2f}")
 
     st.subheader("📊 Category Summary")
     summary = df.groupby('Category')[['Paid In', 'Withdrawn']].sum().reset_index()
@@ -155,7 +160,7 @@ if uploaded_file:
 
     st.subheader("📑 All Transactions")
 
-    # NEW: FILTERS
+    # FILTERS
     col_f1, col_f2 = st.columns([2,3])
     with col_f1:
         categories = ['All'] + sorted(df['Category'].unique().tolist())
