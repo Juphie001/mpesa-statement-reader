@@ -26,7 +26,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.8")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.4.9")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -39,6 +39,7 @@ def clean_details(d):
 
 def categorize(details):
     d = details.lower()
+    d = re.sub(r'\s+', ' ', d) # normalize spaces
     if 'small business withdrawal' in d and 'to mpesa account' in d: return 'Self Transfer'
     if 'business account to mpesa' in d: return 'Self Transfer'
     if 'withdrawal' in d and 'agent' in d: return 'Agent Withdrawal'
@@ -46,9 +47,9 @@ def categorize(details):
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
 
-    # BUSINESS PAYMENTS
-    if 'customer payment to small business' in d: return 'Received - Business'
-    if 'small business payment to customer' in d: return 'Sent - Business'
+    # BUSINESS PAYMENTS - FIXED: more flexible matching
+    if 'customer payment' in d and 'small business' in d: return 'Received - Business'
+    if 'small business payment' in d and 'to customer' in d: return 'Sent - Business'
 
     if 'customer transfer' in d and 'fuliza' in d: return 'Sent to Person'
     if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
@@ -154,23 +155,39 @@ if uploaded_file:
 
     st.subheader("📑 All Transactions")
 
+    # NEW: FILTERS
+    col_f1, col_f2 = st.columns([2,3])
+    with col_f1:
+        categories = ['All'] + sorted(df['Category'].unique().tolist())
+        selected_cat = st.selectbox("Filter by Category", categories)
+    with col_f2:
+        search_term = st.text_input("Search TXID, Name, or Details", "")
+
+    # Apply filters
+    df_filtered = df.copy()
+    if selected_cat!= 'All':
+        df_filtered = df_filtered[df_filtered['Category'] == selected_cat]
+    if search_term:
+        df_filtered = df_filtered[df_filtered['Details'].str.contains(search_term, case=False, na=False)]
+
+    # PAGINATION
     col_a, col_b, col_c = st.columns([2,2,1])
     with col_a:
         rows_per_page = st.selectbox("Rows per page", [50, 100, 200, 500], index=2)
     with col_b:
-        total_pages = max(1, (len(df) - 1) // rows_per_page + 1)
+        total_pages = max(1, (len(df_filtered) - 1) // rows_per_page + 1)
         page_number = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
     with col_c:
-        st.metric("Total Pages", total_pages)
+        st.metric("Filtered Total", len(df_filtered))
 
     start_idx = (page_number - 1) * rows_per_page
     end_idx = start_idx + rows_per_page
-    df_page = df.iloc[start_idx:end_idx]
+    df_page = df_filtered.iloc[start_idx:end_idx]
 
-    st.caption(f"Showing {start_idx + 1} - {min(end_idx, len(df))} of {len(df)} transactions")
+    st.caption(f"Showing {start_idx + 1} - {min(end_idx, len(df_filtered))} of {len(df_filtered)} transactions")
     st.dataframe(df_page, use_container_width=True, hide_index=True)
 
-    csv = df.to_csv(index=False).encode()
-    st.download_button("⬇️ Download Full CSV", csv, "statement.csv", mime="text/csv")
+    csv = df_filtered.to_csv(index=False).encode()
+    st.download_button("⬇️ Download Filtered CSV", csv, "filtered_statement.csv", mime="text/csv")
 else:
     st.info("👆 Upload your M-PESA statement to get started")
