@@ -26,7 +26,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.6.1")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.6.4")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -37,33 +37,27 @@ def clean_amount(x):
 def clean_details(d):
     return re.sub(r'\s+', ' ', str(d)).strip()
 
-def categorize(details, amount_in): # ADDED amount_in
+def categorize(details, amount_in):
     d = details.lower()
-    d = re.sub(r'\s+', ' ', d) # normalize spaces
+    d = re.sub(r'\s+', ' ', d)
 
-    # LOAN TAKEN RULE: must have "via api" AND amount >= 3000
     if 'via api' in d and amount_in >= 3000: return 'Loan Taken'
-
     if 'small business withdrawal' in d and 'to mpesa account' in d: return 'Self Transfer'
     if 'business account to mpesa' in d: return 'Self Transfer'
     if 'withdrawal' in d and 'agent' in d: return 'Agent Withdrawal'
     if 'withdrawal from agent' in d: return 'Agent Withdrawal'
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
-
-    # BUSINESS PAYMENTS
     if 'customer payment' in d and 'small business' in d: return 'Received - Business'
     if 'small business payment' in d and 'to customer' in d: return 'Sent - Business'
-
     if 'customer transfer' in d and 'fuliza' in d: return 'Sent to Person'
     if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
     if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
-    if 'fuliza' in d: return 'Other'
+    if 'pay bill' in d: return 'Paybill'
     if 'merchant customer payment' in d: return 'Received - Till'
     if 'merchant payment' in d: return 'Till Payment'
     if 'till' in d or 'buy goods' in d: return 'Till Payment'
     if 'airtime' in d: return 'Airtime'
-    if 'pay bill' in d: return 'Paybill'
     if 'send money' in d: return 'Sent to Person'
     if 'received' in d or 'funds received' in d: return 'Received'
     if 'withdraw' in d: return 'Withdrawal'
@@ -83,7 +77,7 @@ def merge_tx_group(rows):
         all_details.append(details)
         total_in += paid_in
         total_out += withdrawn
-        categories.add(categorize(details, paid_in)) # PASSED paid_in
+        categories.add(categorize(details, paid_in))
 
     main_cat = 'Other'
     priority = ['Loan Taken', 'Fuliza Repayment', 'Till Payment - Fuliza', 'Self Transfer', 'Agent Withdrawal',
@@ -152,19 +146,17 @@ if uploaded_file:
 
     total_in = df['Paid In'].sum()
     total_out = df['Withdrawn'].sum()
-    net = total_in - total_out
+    net = total_in + total_out # FIX: ADDS INSTEAD OF SUBTRACTING
 
     col1.metric("💰 Money In", f"KES {total_in:,.2f}")
     col2.metric("💸 Money Out", f"KES {total_out:,.2f}")
-    col3.metric("📊 Net", f"KES {net:,.2f}")
+    col3.metric("📊 Total Volume", f"KES {net:,.2f}") # Renamed
 
     st.subheader("📊 Category Summary")
     summary = df.groupby('Category')[['Paid In', 'Withdrawn']].sum().reset_index()
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
     st.subheader("📑 All Transactions")
-
-    # FILTERS
     col_f1, col_f2 = st.columns([2,3])
     with col_f1:
         categories = ['All'] + sorted(df['Category'].unique().tolist())
@@ -172,14 +164,12 @@ if uploaded_file:
     with col_f2:
         search_term = st.text_input("Search TXID, Name, or Details", "")
 
-    # Apply filters
     df_filtered = df.copy()
     if selected_cat!= 'All':
         df_filtered = df_filtered[df_filtered['Category'] == selected_cat]
     if search_term:
         df_filtered = df_filtered[df_filtered['Details'].str.contains(search_term, case=False, na=False)]
 
-    # PAGINATION
     col_a, col_b, col_c = st.columns([2,2,1])
     with col_a:
         rows_per_page = st.selectbox("Rows per page", [50, 100, 200, 500], index=2)
