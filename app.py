@@ -26,7 +26,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.5.0")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.6.0")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -40,6 +40,10 @@ def clean_details(d):
 def categorize(details):
     d = details.lower()
     d = re.sub(r'\s+', ' ', d) # normalize spaces
+
+    # NEW: LOAN TAKEN RULE
+    if 'via api' in d: return 'Loan Taken'
+
     if 'small business withdrawal' in d and 'to mpesa account' in d: return 'Self Transfer'
     if 'business account to mpesa' in d: return 'Self Transfer'
     if 'withdrawal' in d and 'agent' in d: return 'Agent Withdrawal'
@@ -82,7 +86,8 @@ def merge_tx_group(rows):
         categories.add(categorize(details))
 
     main_cat = 'Other'
-    priority = ['Fuliza Repayment', 'Till Payment - Fuliza', 'Self Transfer', 'Agent Withdrawal',
+    # UPDATED: Added Loan Taken to priority so it shows first
+    priority = ['Loan Taken', 'Fuliza Repayment', 'Till Payment - Fuliza', 'Self Transfer', 'Agent Withdrawal',
                 'Agent Deposit', 'Received - Business', 'Sent - Business', 'Till Payment',
                 'Received - Till', 'Sent to Person', 'Charges']
     for p in priority:
@@ -148,7 +153,7 @@ if uploaded_file:
 
     total_in = df['Paid In'].sum()
     total_out = df['Withdrawn'].sum()
-    net = total_in - total_out # FIXED: No more double negative
+    net = total_in - total_out
 
     col1.metric("💰 Money In", f"KES {total_in:,.2f}")
     col2.metric("💸 Money Out", f"KES {total_out:,.2f}")
