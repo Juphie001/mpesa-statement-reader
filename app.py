@@ -26,7 +26,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.6.0")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.6.1")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -37,12 +37,12 @@ def clean_amount(x):
 def clean_details(d):
     return re.sub(r'\s+', ' ', str(d)).strip()
 
-def categorize(details):
+def categorize(details, amount_in): # ADDED amount_in
     d = details.lower()
     d = re.sub(r'\s+', ' ', d) # normalize spaces
 
-    # NEW: LOAN TAKEN RULE
-    if 'via api' in d: return 'Loan Taken'
+    # LOAN TAKEN RULE: must have "via api" AND amount >= 3000
+    if 'via api' in d and amount_in >= 3000: return 'Loan Taken'
 
     if 'small business withdrawal' in d and 'to mpesa account' in d: return 'Self Transfer'
     if 'business account to mpesa' in d: return 'Self Transfer'
@@ -83,10 +83,9 @@ def merge_tx_group(rows):
         all_details.append(details)
         total_in += paid_in
         total_out += withdrawn
-        categories.add(categorize(details))
+        categories.add(categorize(details, paid_in)) # PASSED paid_in
 
     main_cat = 'Other'
-    # UPDATED: Added Loan Taken to priority so it shows first
     priority = ['Loan Taken', 'Fuliza Repayment', 'Till Payment - Fuliza', 'Self Transfer', 'Agent Withdrawal',
                 'Agent Deposit', 'Received - Business', 'Sent - Business', 'Till Payment',
                 'Received - Till', 'Sent to Person', 'Charges']
