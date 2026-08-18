@@ -26,7 +26,7 @@ def check_password():
         st.stop()
 
 check_password()
-st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.6.4")
+st.title("📄 Smart Statement Reader - M-PESA + Bank v3.0.6.6")
 
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
@@ -41,22 +41,36 @@ def categorize(details, amount_in):
     d = details.lower()
     d = re.sub(r'\s+', ' ', d)
 
+    # LOAN
     if 'via api' in d and amount_in >= 3000: return 'Loan Taken'
+
+    # SELF / AGENT
     if 'small business withdrawal' in d and 'to mpesa account' in d: return 'Self Transfer'
     if 'business account to mpesa' in d: return 'Self Transfer'
     if 'withdrawal' in d and 'agent' in d: return 'Agent Withdrawal'
     if 'withdrawal from agent' in d: return 'Agent Withdrawal'
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
+
+    # BUSINESS PAYMENTS + P2P
     if 'customer payment' in d and 'small business' in d: return 'Received - Business'
     if 'small business payment' in d and 'to customer' in d: return 'Sent - Business'
+    if 'small business transfer to' in d: return 'Sent - Business' # NEW
+    if 'small business transfer from' in d: return 'Received - Business' # NEW
+
+    # FULIZA
     if 'customer transfer' in d and 'fuliza' in d: return 'Sent to Person'
     if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
     if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
+
+    # PAYMENTS
     if 'pay bill' in d: return 'Paybill'
+    if 'pay merchant' in d: return 'Till Payment'
     if 'merchant customer payment' in d: return 'Received - Till'
     if 'merchant payment' in d: return 'Till Payment'
     if 'till' in d or 'buy goods' in d: return 'Till Payment'
+
+    # OTHER
     if 'airtime' in d: return 'Airtime'
     if 'send money' in d: return 'Sent to Person'
     if 'received' in d or 'funds received' in d: return 'Received'
@@ -146,11 +160,11 @@ if uploaded_file:
 
     total_in = df['Paid In'].sum()
     total_out = df['Withdrawn'].sum()
-    net = total_in + total_out # FIX: ADDS INSTEAD OF SUBTRACTING
+    net = total_in + total_out # TOTAL VOLUME
 
     col1.metric("💰 Money In", f"KES {total_in:,.2f}")
     col2.metric("💸 Money Out", f"KES {total_out:,.2f}")
-    col3.metric("📊 Total Volume", f"KES {net:,.2f}") # Renamed
+    col3.metric("📊 Total Volume", f"KES {net:,.2f}")
 
     st.subheader("📊 Category Summary")
     summary = df.groupby('Category')[['Paid In', 'Withdrawn']].sum().reset_index()
