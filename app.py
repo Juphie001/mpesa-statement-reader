@@ -27,7 +27,6 @@ def check_password():
 
 check_password()
 st.title("📄 Smart Statement Reader")
-
 uploaded_file = st.file_uploader("Upload your PDF or CSV/XLSX Statement", type=["pdf", "csv", "xlsx"])
 
 def clean_amount(x):
@@ -38,11 +37,12 @@ def clean_details(d):
     return re.sub(r'\s+', ' ', str(d)).strip()
 
 def categorize(details, amount_in):
-    d = details.lower()
-    d = re.sub(r'\s+', ' ', d)
+    d = str(details).lower()
+    d = re.sub(r'\s+', ' ', d).strip()
 
     # LOAN
     if 'via api' in d and amount_in >= 3000: return 'Loan Taken'
+    if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
 
     # SELF / AGENT
     if 'small business withdrawal' in d and 'to mpesa account' in d: return 'Self Transfer'
@@ -50,26 +50,24 @@ def categorize(details, amount_in):
     if 'withdrawal' in d and 'agent' in d: return 'Agent Withdrawal'
     if 'withdrawal from agent' in d: return 'Agent Withdrawal'
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
-    if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
 
-    # AIRTIME / BUNDLES - must be before Fuliza/Till
-    if 'airtime' in d or 'bundle' in d or 'bundles' in d: return 'Airtime'
+    # --- YOUR FIXES - MUST BE HIGH ---
+    if 'bundle' in d: return 'Airtime'
+    if 'airtime' in d: return 'Airtime'
+    if 'customer transfer to' in d: return 'Sent to Person'
+    if 'transfer to' in d and '254' in d: return 'Sent to Person'
+    if 'customer transfer from' in d: return 'Received'
 
-    # BUSINESS PAYMENTS + P2P
+    # BUSINESS
     if 'customer payment' in d and 'small business' in d: return 'Received - Business'
     if 'small business payment' in d and 'to customer' in d: return 'Sent - Business'
     if 'small business transfer to' in d: return 'Sent - Business'
     if 'small business transfer from' in d: return 'Received - Business'
 
-    # FULIZA
+    # FULIZA - but Airtime already handled above
     if 'customer transfer' in d and 'fuliza' in d: return 'Sent to Person'
     if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
     if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
-
-    # CUSTOMER TRANSFER
-    if 'customer transfer to' in d: return 'Sent to Person'
-    if 'customer transfer from' in d: return 'Received'
-    if 'transfer to' in d and 'customer' in d: return 'Sent to Person'
 
     # PAYMENTS
     if 'pay bill' in d: return 'Paybill'
@@ -83,7 +81,7 @@ def categorize(details, amount_in):
     if 'received' in d or 'funds received' in d: return 'Received'
     if 'withdraw' in d: return 'Withdrawal'
     if 'deposit' in d: return 'Deposit'
-    if 'charges' in d: return 'Charges'
+    if 'charges' in d or 'charge' in d or 'transaction cost' in d: return 'Charges'
     return 'Other'
 
 def merge_tx_group(rows):
@@ -98,12 +96,18 @@ def merge_tx_group(rows):
         all_details.append(details)
         total_in += paid_in
         total_out += withdrawn
-        categories.add(categorize(details, paid_in))
+        cat = categorize(details, paid_in)
+        # Don't let charge override main category
+        if cat!= 'Charges':
+            categories.add(cat)
+        else:
+            if not categories:
+                categories.add(cat)
 
     main_cat = 'Other'
-    priority = ['Loan Taken', 'Fuliza Repayment', 'Till Payment - Fuliza', 'Self Transfer', 'Agent Withdrawal',
-                'Agent Deposit', 'Received - Business', 'Sent - Business', 'Till Payment',
-                'Received - Till', 'Sent to Person', 'Charges', 'Airtime', 'Received']
+    priority = ['Loan Taken', 'Fuliza Repayment', 'Self Transfer', 'Received - Business', 'Sent - Business',
+                'Till Payment - Fuliza', 'Till Payment', 'Paybill', 'Airtime', 'Sent to Person',
+                'Received - Till', 'Received', 'Agent Withdrawal', 'Agent Deposit', 'Withdrawal', 'Deposit', 'Charges']
     for p in priority:
         if p in categories:
             main_cat = p
@@ -114,7 +118,6 @@ def merge_tx_group(rows):
     merged_details = " | ".join(all_details)
     return [dt, f"{txid} | {clean_details(merged_details)}", total_in, total_out, main_cat, "M-PESA"]
 
-@st.cache_data(show_spinner=False, ttl=3600)
 def load_and_process(file_bytes, file_type):
     raw_rows = []
     if file_type in ['csv', 'xlsx']:
@@ -161,14 +164,11 @@ if uploaded_file:
         st.stop()
 
     df = df.sort_values('Date', ascending=False).reset_index(drop=True)
-
     st.success(f"Found {len(df)} grouped transactions 🎉")
     col1, col2, col3 = st.columns(3)
-
     total_in = df['Paid In'].sum()
     total_out = df['Withdrawn'].sum()
     net = total_in + total_out
-
     col1.metric("💰 Money In", f"KES {total_in:,.2f}")
     col2.metric("💸 Money Out", f"KES {total_out:,.2f}")
     col3.metric("📊 Total Volume", f"KES {net:,.2f}")
@@ -203,10 +203,8 @@ if uploaded_file:
     start_idx = (page_number - 1) * rows_per_page
     end_idx = start_idx + rows_per_page
     df_page = df_filtered.iloc[start_idx:end_idx]
-
     st.caption(f"Showing {start_idx + 1} - {min(end_idx, len(df_filtered))} of {len(df_filtered)} transactions")
     st.dataframe(df_page, use_container_width=True, hide_index=True)
-
     csv = df_filtered.to_csv(index=False).encode()
     st.download_button("⬇️ Download Filtered CSV", csv, "filtered_statement.csv", mime="text/csv")
 else:
