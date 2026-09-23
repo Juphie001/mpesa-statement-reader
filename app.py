@@ -51,20 +51,28 @@ def categorize(details, amount_in):
     if 'withdrawal from agent' in d: return 'Agent Withdrawal'
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
 
-    # --- YOUR FIXES - MUST BE HIGH ---
+    # AIRTIME / BUNDLES
     if 'bundle' in d: return 'Airtime'
     if 'airtime' in d: return 'Airtime'
-    if 'customer transfer to' in d: return 'Sent to Person'
-    if 'transfer to' in d and '254' in d: return 'Sent to Person'
-    if 'customer transfer from' in d: return 'Received'
 
-    # BUSINESS
+    # RECEIVED TO BUSINESS - MUST COME BEFORE Sent checks
+    if 'micro' in d and 'sme' in d and 'received from' in d: return 'Received - Business'
+    if 'small business' in d and 'received' in d: return 'Received - Business'
     if 'customer payment' in d and 'small business' in d: return 'Received - Business'
+    if 'business' in d and 'received from' in d: return 'Received - Business'
+    if 'sme business' in d and 'received' in d: return 'Received - Business'
+
+    # BUSINESS PAYMENTS OUT
     if 'small business payment' in d and 'to customer' in d: return 'Sent - Business'
     if 'small business transfer to' in d: return 'Sent - Business'
     if 'small business transfer from' in d: return 'Received - Business'
 
-    # FULIZA - but Airtime already handled above
+    # CUSTOMER TRANSFER
+    if 'customer transfer to' in d: return 'Sent to Person'
+    if 'transfer to' in d and '254' in d and 'received' not in d: return 'Sent to Person'
+    if 'customer transfer from' in d: return 'Received'
+
+    # FULIZA
     if 'customer transfer' in d and 'fuliza' in d: return 'Sent to Person'
     if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
     if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
@@ -76,9 +84,14 @@ def categorize(details, amount_in):
     if 'merchant payment' in d: return 'Till Payment'
     if 'till' in d or 'buy goods' in d: return 'Till Payment'
 
-    # OTHER
+    # GENERAL RECEIVED - must be before send money
+    if 'received from' in d: return 'Received'
+    if 'funds received' in d: return 'Received'
+    if 'received' in d and 'business' in d: return 'Received - Business'
+
+    # SEND MONEY
     if 'send money' in d: return 'Sent to Person'
-    if 'received' in d or 'funds received' in d: return 'Received'
+
     if 'withdraw' in d: return 'Withdrawal'
     if 'deposit' in d: return 'Deposit'
     if 'charges' in d or 'charge' in d or 'transaction cost' in d: return 'Charges'
@@ -97,7 +110,6 @@ def merge_tx_group(rows):
         total_in += paid_in
         total_out += withdrawn
         cat = categorize(details, paid_in)
-        # Don't let charge override main category
         if cat!= 'Charges':
             categories.add(cat)
         else:
