@@ -52,16 +52,24 @@ def categorize(details, amount_in):
     if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
 
+    # AIRTIME / BUNDLES - must be before Fuliza/Till
+    if 'airtime' in d or 'bundle' in d or 'bundles' in d: return 'Airtime'
+
     # BUSINESS PAYMENTS + P2P
     if 'customer payment' in d and 'small business' in d: return 'Received - Business'
     if 'small business payment' in d and 'to customer' in d: return 'Sent - Business'
-    if 'small business transfer to' in d: return 'Sent - Business' # NEW
-    if 'small business transfer from' in d: return 'Received - Business' # NEW
+    if 'small business transfer to' in d: return 'Sent - Business'
+    if 'small business transfer from' in d: return 'Received - Business'
 
     # FULIZA
     if 'customer transfer' in d and 'fuliza' in d: return 'Sent to Person'
     if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
     if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
+
+    # CUSTOMER TRANSFER
+    if 'customer transfer to' in d: return 'Sent to Person'
+    if 'customer transfer from' in d: return 'Received'
+    if 'transfer to' in d and 'customer' in d: return 'Sent to Person'
 
     # PAYMENTS
     if 'pay bill' in d: return 'Paybill'
@@ -71,7 +79,6 @@ def categorize(details, amount_in):
     if 'till' in d or 'buy goods' in d: return 'Till Payment'
 
     # OTHER
-    if 'airtime' in d: return 'Airtime'
     if 'send money' in d: return 'Sent to Person'
     if 'received' in d or 'funds received' in d: return 'Received'
     if 'withdraw' in d: return 'Withdrawal'
@@ -96,7 +103,7 @@ def merge_tx_group(rows):
     main_cat = 'Other'
     priority = ['Loan Taken', 'Fuliza Repayment', 'Till Payment - Fuliza', 'Self Transfer', 'Agent Withdrawal',
                 'Agent Deposit', 'Received - Business', 'Sent - Business', 'Till Payment',
-                'Received - Till', 'Sent to Person', 'Charges']
+                'Received - Till', 'Sent to Person', 'Charges', 'Airtime', 'Received']
     for p in priority:
         if p in categories:
             main_cat = p
@@ -160,7 +167,7 @@ if uploaded_file:
 
     total_in = df['Paid In'].sum()
     total_out = df['Withdrawn'].sum()
-    net = total_in + total_out # TOTAL VOLUME
+    net = total_in + total_out
 
     col1.metric("💰 Money In", f"KES {total_in:,.2f}")
     col2.metric("💸 Money Out", f"KES {total_out:,.2f}")
