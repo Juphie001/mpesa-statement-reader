@@ -150,7 +150,7 @@ def load_and_process_bank(file_bytes, file_type):
                             narrative_parts.insert(0, lines[i-1])
                     narrative=" ".join(narrative_parts).strip()
                     w=d=0.0
-                    low=(narrative+ " + line).lower()
+                    low=(narrative+ " " + line).lower()
                     if len(remaining)==1:
                         amt=clean_amount(remaining[0])
                         if 'payment to' in low or ' to 254' in low or ' to 2' in low: w=amt
