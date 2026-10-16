@@ -11,7 +11,8 @@ def check_password():
     def password_entered():
         if st.session_state["password"] == st.secrets.get("password", "1234"):
             st.session_state["password_correct"] = True
-            del st.session_state["password"]
+            if "password" in st.session_state:
+                del st.session_state["password"]
         else:
             st.session_state["password_correct"] = False
     if "password_correct" not in st.session_state:
@@ -33,7 +34,6 @@ def clean_amount(x):
     try:
         if pd.isna(x) or x == '': return 0.0
         s = str(x).replace(",", "").replace("KES", "").replace("Cr", "").replace("Dr", "").strip()
-        # handle (1000) as negative
         if s.startswith('(') and s.endswith(')'):
             s = '-' + s[1:-1]
         return float(s)
@@ -84,8 +84,8 @@ def categorize(details, amount_in):
 
 def categorize_bank(narrative):
     n = str(narrative).lower()
-    if 'mpesa payment to' in n or 'mmp/mpesa' in n: return 'Sent - M-Pesa'
-    if 'mpesa ref' in n and 'from' in n: return 'Received - M-Pesa'
+    if 'mpesa' in n and 'payment to' in n: return 'Sent - M-Pesa'
+    if 'mmp' in n or 'mpesa ref' in n: return 'Received - M-Pesa'
     if 'salary' in n or 'payroll' in n: return 'Salary'
     if 'charge' in n or 'commission' in n or 'fee' in n: return 'Charges'
     if 'transfer' in n: return 'Bank Transfer'
@@ -150,105 +150,68 @@ def load_and_process_mpesa(file_bytes, file_type):
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     return df
 
-# --- FIXED BANK SIDE ---
 def load_and_process_bank(file_bytes, file_type):
     data = []
     if file_type in ['csv', 'xlsx']:
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         df_raw.columns = [c.strip() for c in df_raw.columns]
         for _, row in df_raw.iterrows():
-            tran_date = str(row.get('Tran Date', row.get('Date', row.get('Transaction Date',''))))
-            withdrawals = clean_amount(row.get('Withdrawals', row.get('Debit', 0)))
-            deposits = clean_amount(row.get('Deposits', row.get('Credit', 0)))
-            narrative = str(row.get('Transaction Narrative', row.get('Narrative', row.get('Details',''))))
-            ref = str(row.get('Ref No', row.get('Reference','')))
+            tran_date = str(row.get('Tran Date', row.get('Date','')))
+            withdrawals = clean_amount(row.get('Withdrawals',0))
+            deposits = clean_amount(row.get('Deposits',0))
+            narrative = str(row.get('Transaction Narrative', row.get('Narrative','')))
+            ref = str(row.get('Ref No',''))
             if withdrawals==0 and deposits==0: continue
             details = f"{clean_details(ref)} | {clean_details(narrative)}".strip(" |")
-            cat = categorize_bank(narrative)
-            data.append([tran_date, details, deposits, withdrawals, cat, "BANK"])
-    else: # PDF - ROBUST
+            data.append([tran_date, details, deposits, withdrawals, categorize_bank(narrative), "BANK"])
+    else:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             for page in pdf.pages:
-                text = page.extract_text() or ""
-                # Try tables first
-                tables = page.extract_tables(table_settings={"text_x_tolerance": 2, "text_y_tolerance": 2, "intersection_y_tolerance": 5})
-                found_in_table = False
-                if tables:
-                    for table in tables:
-                        if not table or len(table) < 2: continue
-                        for row in table[1:]:
-                            if not row: continue
-                            row = [str(r or '').strip() for r in row]
-                            # Join to check
-                            joined = " ".join(row).lower()
-                            if 'tran date' in joined or 'balance b/f' in joined or 'total' in joined and len(row)<4:
-                                continue
-                            # Heuristic: find date at start, and amounts
-                            if len(row) >= 5:
-                                # Standard: Date, Value Date, Ref, Withdrawal, Deposit, Balance, Narrative
-                                tran_date = row[0]
-                                ref_no = row[2] if len(row)>2 else ""
-                                withdrawals = row[3] if len(row)>3 else "0"
-                                deposits = row[4] if len(row)>4 else "0"
-                                narrative = row[6] if len(row)>6 else row[-1]
+                tables = page.extract_tables(table_settings={"text_x_tolerance": 2, "text_y_tolerance": 3, "intersection_y_tolerance": 8})
+                if not tables: continue
+                for table in tables:
+                    if not table or len(table) < 2: continue
+                    for row in table[1:]:
+                        if not row: continue
+                        row = [str(r or "").strip() for r in row]
+                        full_line = " ".join(row)
+                        low = full_line.lower()
+                        if 'tran date' in low or 'balance b/f' in low or low.strip() == '':
+                            continue
+                        if not re.search(r'\d{2}-\d{2}-\d{2,4}', full_line):
+                            continue
 
-                                # If row is shifted and amounts are empty, try regex on joined
-                                w = clean_amount(withdrawals)
-                                d = clean_amount(deposits)
-                                if w==0 and d==0:
-                                    # Try find amounts in row via regex
-                                    amounts = re.findall(r'[\d,]+\.\d{2}', " ".join(row))
-                                    if amounts:
-                                        # Last 2 amounts are usually Withdrawal/Deposit/Balance
-                                        pass
-                                    else:
-                                        continue
-                                # Validate date
-                                if not re.search(r'\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{1,2}-[A-Za-z]{3}-\d{2,4}', tran_date):
-                                    if not tran_date.strip():
-                                        # Some banks leave date blank for continuation, use previous
-                                        tran_date = data[-1][0] if data else ""
-                                    else:
-                                        continue
-                                details = f"{clean_details(ref_no)} | {clean_details(narrative)}".strip(" |")
-                                cat = categorize_bank(narrative)
-                                data.append([tran_date, details, d, w, cat, "BANK"])
-                                found_in_table = True
-                # Fallback: parse by lines if no table found
-                if not found_in_table:
-                    for line in text.split('\n'):
-                        # Look for lines with date and amount
-                        if re.search(r'\d{2}-\d{2}-\d{2,4}|\d{2}/[A-Za-z]{3}/\d{4}', line):
-                            # Try split
-                            parts = re.split(r'\s{2,}', line.strip())
-                            if len(parts) >= 3:
-                                tran_date = parts[0]
-                                narrative = parts[-1]
-                                # find amounts in middle
-                                nums = re.findall(r'[\d,]+\.\d{2}', line)
-                                w,d = 0.0, 0.0
-                                if len(nums) >= 2:
-                                    # Heuristic: if 3 nums -> W,D,Bal
-                                    # if only 1 or 2, check keywords
-                                    if 'withdrawal' in line.lower() or 'debit' in line.lower():
-                                        w = clean_amount(nums[0])
-                                    else:
-                                        # assume last before balance is deposit/withdrawal - we need 2
-                                        if len(nums) == 3:
-                                            w = clean_amount(nums[0])
-                                            d = clean_amount(nums[1])
-                                        elif len(nums) == 2:
-                                            # Check if line has lots of spaces before narrative
-                                            w = clean_amount(nums[0])
-                                else:
-                                    continue
-                                if w==0 and d==0: continue
-                                details = clean_details(narrative)
-                                cat = categorize_bank(narrative)
-                                data.append([tran_date, details, d, w, cat, "BANK"])
+                        narrative = row[-1] if row[-1] else (row[-2] if len(row)>=2 else "")
+                        amounts = re.findall(r'[\d,]+\.\d{2}', full_line)
+                        if not amounts: continue
+
+                        # Last amount is Balance
+                        remaining = amounts[:-1]
+                        if not remaining: continue
+
+                        w, d = 0.0, 0.0
+                        n_low = narrative.lower()
+
+                        if len(remaining) == 1:
+                            amt = clean_amount(remaining[0])
+                            # SMART CHECK: Payment to = OUT, Mpesa Ref = IN
+                            if 'payment to' in n_low or ('transfer to' in n_low and '254' in n_low):
+                                w = amt
+                            elif 'mmp' in n_low or 'mpesa ref' in n_low or 'ref' in n_low and 'payment' not in n_low:
+                                # For your 7k example - it's a deposit
+                                d = amt
+                            else:
+                                w = amt
+                        else:
+                            w = clean_amount(remaining[0])
+                            d = clean_amount(remaining[1])
+
+                        if w==0 and d==0: continue
+                        tran_date = re.search(r'\d{2}-\d{2}-\d{2,4}', full_line).group()
+                        data.append([tran_date, clean_details(narrative), d, w, categorize_bank(narrative), "BANK"])
 
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
-    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce', infer_datetime_format=True)
+    df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
     return df
 
 if uploaded_file:
@@ -258,7 +221,7 @@ if uploaded_file:
         df = load_and_process_mpesa(file_bytes, file_type) if statement_mode == "M-Pesa" else load_and_process_bank(file_bytes, file_type)
 
     if df.empty:
-        st.error("No transactions found. The PDF might be a scanned image. If it's bank, try CSV export.")
+        st.error("No transactions found.")
         st.stop()
 
     df = df.sort_values('Date', ascending=False).reset_index(drop=True)
