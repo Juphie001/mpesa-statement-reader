@@ -44,53 +44,29 @@ def clean_details(d):
 
 def categorize(details, amount_in):
     d = str(details).lower()
-    d = re.sub(r'\s+', ' ', d).strip()
     if 'via api' in d and amount_in >= 3000: return 'Loan Taken'
     if 'od loan' in d and 'repayment' in d: return 'Fuliza Repayment'
     if 'small business withdrawal' in d and 'to mpesa account' in d: return 'Self Transfer'
     if 'business account to mpesa' in d: return 'Self Transfer'
     if 'withdrawal' in d and 'agent' in d: return 'Agent Withdrawal'
-    if 'withdrawal from agent' in d: return 'Agent Withdrawal'
-    if 'deposit' in d and 'agent' in d: return 'Agent Deposit'
-    if 'bundle' in d: return 'Airtime'
-    if 'airtime' in d: return 'Airtime'
-    if 'micro' in d and 'sme' in d and 'received from' in d: return 'Received - Business'
+    if 'bundle' in d or 'airtime' in d: return 'Airtime'
     if 'small business' in d and 'received' in d: return 'Received - Business'
-    if 'customer payment' in d and 'small business' in d: return 'Received - Business'
     if 'business' in d and 'received from' in d: return 'Received - Business'
-    if 'sme business' in d and 'received' in d: return 'Received - Business'
     if 'small business payment' in d and 'to customer' in d: return 'Sent - Business'
-    if 'small business transfer to' in d: return 'Sent - Business'
-    if 'small business transfer from' in d: return 'Received - Business'
     if 'customer transfer to' in d: return 'Sent to Person'
-    if 'transfer to' in d and '254' in d and 'received' not in d: return 'Sent to Person'
-    if 'customer transfer from' in d: return 'Received'
-    if 'customer transfer' in d and 'fuliza' in d: return 'Sent to Person'
-    if 'fuliza' in d and 'merchant payment' in d: return 'Till Payment - Fuliza'
-    if 'fuliza' in d and ('till' in d or 'buy goods' in d): return 'Till Payment - Fuliza'
     if 'pay bill' in d: return 'Paybill'
-    if 'pay merchant' in d: return 'Till Payment'
-    if 'merchant customer payment' in d: return 'Received - Till'
-    if 'merchant payment' in d: return 'Till Payment'
+    if 'merchant' in d: return 'Till Payment'
     if 'till' in d or 'buy goods' in d: return 'Till Payment'
     if 'received from' in d: return 'Received'
-    if 'funds received' in d: return 'Received'
-    if 'received' in d and 'business' in d: return 'Received - Business'
-    if 'send money' in d: return 'Sent to Person'
-    if 'withdraw' in d: return 'Withdrawal'
-    if 'deposit' in d: return 'Deposit'
-    if 'charges' in d or 'charge' in d or 'transaction cost' in d: return 'Charges'
+    if 'charges' in d or 'transaction cost' in d: return 'Charges'
     return 'Other'
 
 def categorize_bank(narrative):
     n = str(narrative).lower()
     if 'mpesa' in n and 'payment to' in n: return 'Sent - M-Pesa'
     if 'mmp' in n or 'mpesa ref' in n: return 'Received - M-Pesa'
-    if 'salary' in n or 'payroll' in n: return 'Salary'
     if 'charge' in n or 'commission' in n or 'fee' in n: return 'Charges'
-    if 'transfer' in n: return 'Bank Transfer'
-    if 'atm' in n or 'withdrawal' in n: return 'Withdrawal'
-    if 'deposit' in n: return 'Deposit'
+    if 'salary' in n: return 'Salary'
     return 'Other Bank'
 
 def merge_tx_group(rows):
@@ -110,42 +86,33 @@ def merge_tx_group(rows):
         else:
             if not categories: categories.add(cat)
     main_cat = 'Other'
-    priority = ['Loan Taken', 'Fuliza Repayment', 'Self Transfer', 'Received - Business', 'Sent - Business',
-                'Till Payment - Fuliza', 'Till Payment', 'Paybill', 'Airtime', 'Sent to Person',
-                'Received - Till', 'Received', 'Agent Withdrawal', 'Agent Deposit', 'Withdrawal', 'Deposit', 'Charges']
+    priority = ['Loan Taken','Fuliza Repayment','Self Transfer','Received - Business','Sent - Business','Till Payment','Paybill','Airtime','Sent to Person','Received','Charges']
     for p in priority:
         if p in categories:
             main_cat = p
             break
     if main_cat == 'Other' and categories:
         main_cat = list(categories)[0]
-    merged_details = " | ".join(all_details)
-    return [dt, f"{txid} | {clean_details(merged_details)}", total_in, total_out, main_cat, "M-PESA"]
+    return [dt, f"{txid} | {clean_details(' | '.join(all_details))}", total_in, total_out, main_cat, "M-PESA"]
 
 def load_and_process_mpesa(file_bytes, file_type):
     raw_rows = []
     if file_type in ['csv', 'xlsx']:
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         for _, row in df_raw.iterrows():
-            txid = str(row.get('Receipt No.', ''))
-            details = str(row.get('Details', ''))
-            paid_in = clean_amount(row.get('Paid In', 0))
-            withdrawn = clean_amount(row.get('Withdrawn', 0))
-            raw_rows.append([txid, row.get('Completion Time', ''), details, paid_in, withdrawn])
-    elif file_type == 'pdf':
+            raw_rows.append([str(row.get('Receipt No.','')), row.get('Completion Time',''), str(row.get('Details','')), clean_amount(row.get('Paid In',0)), clean_amount(row.get('Withdrawn',0))])
+    else:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables(table_settings={"text_x_tolerance": 3, "text_y_tolerance": 3})
                 if tables:
                     for table in tables:
                         for row in table[1:]:
-                            if row and row[0] and len(row) == 7:
-                                receipt_no, completion_time, details, status, paid_in, withdrawn, balance = row
-                                raw_rows.append([receipt_no, completion_time, details, clean_amount(paid_in), clean_amount(withdrawn)])
+                            if row and len(row)==7 and row[0]:
+                                raw_rows.append([row[0], row[1], row[2], clean_amount(row[4]), clean_amount(row[5])])
     grouped = defaultdict(list)
     for r in raw_rows: grouped[r[0]].append(r)
-    data = []
-    for txid, rows in grouped.items(): data.append(merge_tx_group(rows))
+    data = [merge_tx_group(rows) for rows in grouped.values()]
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     return df
@@ -156,114 +123,127 @@ def load_and_process_bank(file_bytes, file_type):
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type == 'csv' else pd.read_excel(io.BytesIO(file_bytes))
         df_raw.columns = [c.strip() for c in df_raw.columns]
         for _, row in df_raw.iterrows():
-            tran_date = str(row.get('Tran Date', row.get('Date','')))
-            withdrawals = clean_amount(row.get('Withdrawals',0))
-            deposits = clean_amount(row.get('Deposits',0))
-            narrative = str(row.get('Transaction Narrative', row.get('Narrative','')))
-            ref = str(row.get('Ref No',''))
-            if withdrawals==0 and deposits==0: continue
-            details = f"{clean_details(ref)} | {clean_details(narrative)}".strip(" |")
-            data.append([tran_date, details, deposits, withdrawals, categorize_bank(narrative), "BANK"])
+            w = clean_amount(row.get('Withdrawals',0))
+            d = clean_amount(row.get('Deposits',0))
+            nar = str(row.get('Transaction Narrative',''))
+            if w==0 and d==0: continue
+            data.append([str(row.get('Tran Date','')), clean_details(nar), d, w, categorize_bank(nar), "BANK"])
     else:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             for page in pdf.pages:
-                tables = page.extract_tables(table_settings={"text_x_tolerance": 2, "text_y_tolerance": 3, "intersection_y_tolerance": 8})
-                if not tables: continue
-                for table in tables:
-                    if not table or len(table) < 2: continue
-                    for row in table[1:]:
-                        if not row: continue
-                        row = [str(r or "").strip() for r in row]
-                        full_line = " ".join(row)
-                        low = full_line.lower()
-                        if 'tran date' in low or 'balance b/f' in low or low.strip() == '':
-                            continue
-                        if not re.search(r'\d{2}-\d{2}-\d{2,4}', full_line):
-                            continue
+                # Try table method
+                try:
+                    tables = page.extract_tables(table_settings={"text_x_tolerance": 2, "text_y_tolerance": 3, "intersection_y_tolerance": 8})
+                    if tables:
+                        for table in tables:
+                            for row in table[1:]:
+                                if not row: continue
+                                row = [str(r or "").strip() for r in row]
+                                line = " ".join(row)
+                                if 'Tran Date' in line or 'Balance B/F' in line: continue
+                                if not re.search(r'\d{2}-\d{2}-\d{2,4}', line): continue
+                                amounts = re.findall(r'[\d,]+\.\d{2}', line)
+                                if len(amounts) < 2: continue
+                                narrative = row[-1]
+                                tran_date = re.search(r'\d{2}-\d{2}-\d{2,4}', line).group()
+                                remaining = amounts[:-1]
+                                w=d=0.0
+                                if len(remaining)==1:
+                                    amt=clean_amount(remaining[0])
+                                    if 'payment to' in narrative.lower(): w=amt
+                                    else: d=amt if ('mmp' in narrative.lower() or 'mpesa ref' in narrative.lower()) else amt
+                                    if 'payment to' in narrative.lower(): w=amt; d=0
+                                else:
+                                    w=clean_amount(remaining[0]); d=clean_amount(remaining[1])
+                                if w==0 and d==0: continue
+                                data.append([tran_date, clean_details(narrative), d, w, categorize_bank(narrative), "BANK"])
+                except: pass
 
-                        narrative = row[-1] if row[-1] else (row[-2] if len(row)>=2 else "")
-                        amounts = re.findall(r'[\d,]+\.\d{2}', full_line)
-                        if not amounts: continue
+                # FALLBACK: Text line method - WORKS FOR YOUR SAMPLE
+                text = page.extract_text() or ""
+                for line in text.split('\n'):
+                    if 'Tran Date' in line or 'Statement' in line or 'Account No' in line: continue
+                    if not re.search(r'\d{2}-\d{2}-\d{2,4}', line): continue
+                    amounts = re.findall(r'[\d,]+\.\d{2}', line)
+                    if len(amounts) < 2: continue
+                    # Get date and narrative
+                    m_date = re.search(r'\d{2}-\d{2}-\d{2,4}', line)
+                    if not m_date: continue
+                    tran_date = m_date.group()
+                    # Narrative is after balance Cr
+                    split_cr = re.split(r'[\d,]+\.\d{2}Cr', line)
+                    narrative = split_cr[-1].strip() if len(split_cr)>1 else ""
+                    if not narrative or len(narrative) < 3: continue
+                    if any(tran_date in str(x[0]) and narrative[:15] in str(x[1]) for x in data): continue
 
-                        # Last amount is Balance
-                        remaining = amounts[:-1]
-                        if not remaining: continue
-
-                        w, d = 0.0, 0.0
-                        n_low = narrative.lower()
-
-                        if len(remaining) == 1:
-                            amt = clean_amount(remaining[0])
-                            # SMART CHECK: Payment to = OUT, Mpesa Ref = IN
-                            if 'payment to' in n_low or ('transfer to' in n_low and '254' in n_low):
-                                w = amt
-                            elif 'mmp' in n_low or 'mpesa ref' in n_low or 'ref' in n_low and 'payment' not in n_low:
-                                # For your 7k example - it's a deposit
-                                d = amt
-                            else:
-                                w = amt
+                    remaining = amounts[:-1]
+                    w=d=0.0
+                    low = line.lower() + narrative.lower()
+                    if len(remaining)==1:
+                        amt=clean_amount(remaining[0])
+                        if 'payment to' in low:
+                            w=amt
+                        elif 'mmp' in low or 'mpesa ref' in low:
+                            d=amt
                         else:
-                            w = clean_amount(remaining[0])
-                            d = clean_amount(remaining[1])
-
-                        if w==0 and d==0: continue
-                        tran_date = re.search(r'\d{2}-\d{2}-\d{2,4}', full_line).group()
-                        data.append([tran_date, clean_details(narrative), d, w, categorize_bank(narrative), "BANK"])
+                            # If it says MMP or Ref, treat as IN
+                            if 'mmp' in low or 'ref' in low:
+                                d=amt
+                            else:
+                                w=amt
+                    else:
+                        w=clean_amount(remaining[0]); d=clean_amount(remaining[1])
+                    if w==0 and d==0: continue
+                    data.append([tran_date, clean_details(narrative), d, w, categorize_bank(narrative), "BANK"])
 
     df = pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
     df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
+    df = df.drop_duplicates()
     return df
 
 if uploaded_file:
     file_bytes = uploaded_file.getvalue()
     file_type = uploaded_file.name.split('.')[-1].lower()
-    with st.spinner(f"Processing {statement_mode} file..."):
+    with st.spinner(f"Processing {statement_mode}..."):
         df = load_and_process_mpesa(file_bytes, file_type) if statement_mode == "M-Pesa" else load_and_process_bank(file_bytes, file_type)
 
     if df.empty:
-        st.error("No transactions found.")
+        st.error("No transactions found. The PDF might be scanned. Export CSV from Equity app instead.")
+        # Debug help
+        try:
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                sample_text = (pdf.pages[0].extract_text() or "")[:2000]
+                st.code(sample_text)
+        except: pass
         st.stop()
 
     df = df.sort_values('Date', ascending=False).reset_index(drop=True)
     df['Paid In'] = pd.to_numeric(df['Paid In'], errors='coerce').fillna(0)
     df['Withdrawn'] = pd.to_numeric(df['Withdrawn'], errors='coerce').fillna(0)
-    st.success(f"Found {len(df)} transactions from {statement_mode} 🎉")
+    st.success(f"Found {len(df)} transactions 🎉")
     col1, col2, col3 = st.columns(3)
-    total_in = df['Paid In'].sum()
-    total_out = df['Withdrawn'].sum()
-    col1.metric("💰 Money In", f"KES {total_in:,.2f}")
-    col2.metric("💸 Money Out", f"KES {total_out:,.2f}")
-    col3.metric("📊 Total Volume", f"KES {total_in + total_out:,.2f}")
+    col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
+    col2.metric("💸 Money Out", f"KES {df['Withdrawn'].sum():,.2f}")
+    col3.metric("📊 Total", f"KES {df['Paid In'].sum() + df['Withdrawn'].sum():,.2f}")
 
     st.subheader("📊 Category Summary")
-    summary = df.groupby('Category')[['Paid In', 'Withdrawn']].sum().reset_index()
-    st.dataframe(summary, use_container_width=True, hide_index=True)
+    st.dataframe(df.groupby('Category')[['Paid In','Withdrawn']].sum().reset_index(), use_container_width=True, hide_index=True)
 
     st.subheader("📑 All Transactions")
-    col_f1, col_f2 = st.columns([2,3])
-    with col_f1:
-        categories = ['All'] + sorted(df['Category'].unique().tolist())
-        selected_cat = st.selectbox("Filter by Category", categories)
-    with col_f2:
-        search_term = st.text_input("Search TXID, Name, or Details", "")
+    c1,c2 = st.columns([2,3])
+    with c1:
+        cats = ['All'] + sorted(df['Category'].unique().tolist())
+        sel = st.selectbox("Filter by Category", cats)
+    with c2:
+        search = st.text_input("Search Details", "")
+    df_f = df.copy()
+    if sel!='All': df_f = df_f[df_f['Category']==sel]
+    if search: df_f = df_f[df_f['Details'].str.contains(search, case=False, na=False)]
 
-    df_filtered = df.copy()
-    if selected_cat!= 'All': df_filtered = df_filtered[df_filtered['Category'] == selected_cat]
-    if search_term: df_filtered = df_filtered[df_filtered['Details'].str.contains(search_term, case=False, na=False)]
-
-    col_a, col_b, col_c = st.columns([2,2,1])
-    with col_a: rows_per_page = st.selectbox("Rows per page", [50, 100, 200, 500], index=2)
-    with col_b:
-        total_pages = max(1, (len(df_filtered) - 1) // rows_per_page + 1)
-        page_number = st.number_input("Page", min_value=1, max_value=total_pages, value=1, step=1)
-    with col_c: st.metric("Filtered Total", len(df_filtered))
-
-    start_idx = (page_number - 1) * rows_per_page
-    end_idx = start_idx + rows_per_page
-    df_page = df_filtered.iloc[start_idx:end_idx]
-    st.caption(f"Showing {start_idx + 1} - {min(end_idx, len(df_filtered))} of {len(df_filtered)} transactions")
-    st.dataframe(df_page, use_container_width=True, hide_index=True)
-    csv = df_filtered.to_csv(index=False).encode()
-    st.download_button("⬇️ Download Filtered CSV", csv, "filtered_statement.csv", mime="text/csv")
+    rows = st.selectbox("Rows per page", [50,100,200,500], index=1)
+    pages = max(1, (len(df_f)-1)//rows+1)
+    p = st.number_input("Page", 1, pages, 1)
+    st.dataframe(df_f.iloc[(p-1)*rows:p*rows], use_container_width=True, hide_index=True)
+    st.download_button("⬇️ Download CSV", df_f.to_csv(index=False).encode(), "filtered.csv", "text/csv")
 else:
-    st.info(f"👆 Upload your {statement_mode} statement to get started")
+    st.info(f"👆 Upload your {statement_mode} statement")
