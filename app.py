@@ -35,6 +35,7 @@ def clean_amount(x):
         if pd.isna(x) or x == '': return 0.0
         s = str(x).replace(",", "").replace("KES", "").replace("Cr", "").replace("Dr", "").strip()
         if s.startswith('(') and s.endswith(')'): s = '-' + s[1:-1]
+        if s == '' or s == '-': return 0.0
         return float(s)
     except: return 0.0
 
@@ -63,9 +64,12 @@ def categorize(details, amount_in):
 def categorize_bank(narrative):
     n = str(narrative).lower()
     if 'mpesa' in n and 'payment to' in n: return 'Sent - M-Pesa'
-    if 'mmp' in n or 'mpesa ref' in n: return 'Received - M-Pesa'
+    if 'payed' in n and 'mpesa' in n: return 'Received - M-Pesa'
+    if 'mmp' in n or 'mpesa ref' in n or 'mpesa' in n: return 'M-Pesa Transaction'
     if 'charge' in n or 'commission' in n or 'fee' in n: return 'Charges'
     if 'salary' in n: return 'Salary'
+    if 'app/mpesa' in n or 'app/' in n: return 'M-Pesa Transaction'
+    if 'box' in n and 'en' in n: return 'Received - M-Pesa'
     return 'Other Bank'
 
 def merge_tx_group(rows):
@@ -107,6 +111,13 @@ def load_and_process_mpesa(file_bytes, file_type):
 
 def load_and_process_bank(file_bytes, file_type):
     data=[]
+    def parse_amount_new(s):
+        if not s: return 0.0
+        s = str(s).replace(",","").replace("Cr","").replace("Dr","").strip()
+        if not s or s == '-': return 0.0
+        try: return float(s)
+        except: return 0.0
+
     if file_type in ['csv','xlsx']:
         df_raw = pd.read_csv(io.BytesIO(file_bytes)) if file_type=='csv' else pd.read_excel(io.BytesIO(file_bytes))
         df_raw.columns=[c.strip() for c in df_raw.columns]
@@ -116,56 +127,80 @@ def load_and_process_bank(file_bytes, file_type):
             data.append([str(row.get('Tran Date','')), clean_details(row.get('Transaction Narrative','')), d, w, categorize_bank(str(row.get('Transaction Narrative',''))), "BANK"])
     else:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            full_text=""
+            full_text = ""
             for page in pdf.pages:
-                full_text += "\n" + (page.extract_text() or "")
-            lines=[l.strip() for l in full_text.split('\n') if l.strip()]
-            i=0
-            while i < len(lines):
-                line=lines[i]
-                if 'Tran Date' in line or 'Account Statement' in line or 'PERIS' in line or 'Page' in line and 'Of' in line:
-                    i+=1; continue
-                # Match multiline format
-                m = re.search(r'(\d{2}-\d{2}-\d{2,4})\s+(\d{2}-\d{2}-\d{2,4})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})Cr', line)
-                m2 = re.search(r'(\d{2}-\d{2}-\d{2,4})\s+(\d{2}-\d{2}-\d{2,4})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})Cr', line)
-                if m or m2:
-                    amounts = re.findall(r'[\d,]+\.\d{2}', line)
-                    if len(amounts) < 2: i+=1; continue
-                    tran_date = re.search(r'\d{2}-\d{2}-\d{2,4}', line).group()
-                    remaining = amounts[:-1]
-                    narrative_parts=[]
-                    after_cr = re.split(r'[\d,]+\.\d{2}Cr', line)[-1].strip()
-                    if after_cr: narrative_parts.append(after_cr)
-                    j=i+1
-                    while j < len(lines) and j < i+4:
-                        nl=lines[j]
-                        if re.match(r'^\d{2}-\d{2}-\d{2,4}\s+\d{2}-\d{2}-\d{2,4}', nl): break
-                        if 'Page' in nl or 'Tran Date' in nl or 'Account' in nl: break
-                        if re.match(r'^\d{2}-\d{2}-\d{2,4}\s+[\d,]+\.\d{2}Cr', nl): break
-                        narrative_parts.append(nl)
-                        j+=1
-                    # Also check previous line for MPESA Payment header
-                    if i>0 and not re.match(r'^\d{2}-\d{2}-\d{2,4}', lines[i-1]):
-                        if 'MPESA' in lines[i-1] or 'MMP' in lines[i-1] or '/' in lines[i-1]:
-                            narrative_parts.insert(0, lines[i-1])
-                    narrative=" ".join(narrative_parts).strip()
-                    w=d=0.0
-                    low=(narrative+ " " + line).lower()
-                    if len(remaining)==1:
-                        amt=clean_amount(remaining[0])
-                        if 'payment to' in low or ' to 254' in low or ' to 2' in low: w=amt
-                        elif 'mmp' in low or 'mpesa ref' in low: d=amt
-                        else: w=amt
-                    else:
-                        w=clean_amount(remaining[0]); d=clean_amount(remaining[1])
-                    if w!=0 or d!=0:
-                        data.append([tran_date, clean_details(narrative) if narrative else clean_details(line), d, w, categorize_bank(narrative), "BANK"])
-                        i=j-1
-                i+=1
+                txt = page.extract_text() or ""
+                full_text += "\n" + txt
+                tables = page.extract_tables(table_settings={"text_x_tolerance": 3, "text_y_tolerance": 3, "intersection_y_tolerance": 10})
+                if not tables: continue
+                for table in tables:
+                    if not table or len(table) < 2: continue
+                    header_text = " ".join([str(c or "") for c in table[0]]).lower()
+                    # NEW FORMAT: Transaction Details | Payment reference | Value Date | Credit | Debit | Balance
+                    if "transaction details" in header_text and ("value date" in header_text or "credit" in header_text):
+                        for row in table[1:]:
+                            if not row or len(row) < 4: continue
+                            trans_details = clean_details(row[0] or "")
+                            if not trans_details: continue
+                            low = trans_details.lower()
+                            if low == "total" or "balance b/f" in low or low.startswith("total"): continue
+                            pay_ref = clean_details(row[1] if len(row) > 1 else "")
+                            val_date = str(row[2] if len(row) > 2 else "").strip()
+                            credit_str = row[3] if len(row) > 3 else ""
+                            debit_str = row[4] if len(row) > 4 else ""
+                            credit = parse_amount_new(credit_str)
+                            debit = parse_amount_new(debit_str)
+                            if credit == 0 and debit == 0: continue
+                            narrative = f"{trans_details} {pay_ref}".strip()
+                            data.append([val_date, narrative, credit, debit, categorize_bank(narrative), "BANK"])
+
+            # FALLBACK OLD FORMAT
+            if not data:
+                lines=[l.strip() for l in full_text.split('\n') if l.strip()]
+                i=0
+                while i < len(lines):
+                    line=lines[i]
+                    if 'Tran Date' in line or 'Account Statement' in line or 'PERIS' in line or ('Page' in line and 'Of' in line):
+                        i+=1; continue
+                    m = re.search(r'(\d{2}-\d{2}-\d{2,4})\s+(\d{2}-\d{2}-\d{2,4})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})Cr', line)
+                    m2 = re.search(r'(\d{2}-\d{2}-\d{2,4})\s+(\d{2}-\d{2}-\d{2,4})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})\s+([\d,]+\.\d{2})Cr', line)
+                    if m or m2:
+                        amounts = re.findall(r'[\d,]+\.\d{2}', line)
+                        if len(amounts) < 2: i+=1; continue
+                        tran_date = re.search(r'\d{2}-\d{2}-\d{2,4}', line).group()
+                        remaining = amounts[:-1]
+                        narrative_parts=[]
+                        after_cr = re.split(r'[\d,]+\.\d{2}Cr', line)[-1].strip()
+                        if after_cr: narrative_parts.append(after_cr)
+                        j=i+1
+                        while j < len(lines) and j < i+4:
+                            nl=lines[j]
+                            if re.match(r'^\d{2}-\d{2}-\d{2,4}\s+\d{2}-\d{2}-\d{2,4}', nl): break
+                            if 'Page' in nl or 'Tran Date' in nl or 'Account' in nl: break
+                            if re.match(r'^\d{2}-\d{2}-\d{2,4}\s+[\d,]+\.\d{2}Cr', nl): break
+                            narrative_parts.append(nl)
+                            j+=1
+                        if i>0 and not re.match(r'^\d{2}-\d{2}-\d{2,4}', lines[i-1]):
+                            if 'MPESA' in lines[i-1] or 'MMP' in lines[i-1] or '/' in lines[i-1]:
+                                narrative_parts.insert(0, lines[i-1])
+                        narrative=" ".join(narrative_parts).strip()
+                        w=d=0.0
+                        low=(narrative+ " " + line).lower()
+                        if len(remaining)==1:
+                            amt=clean_amount(remaining[0])
+                            if 'payment to' in low or ' to 254' in low or ' to 2' in low: w=amt
+                            elif 'mmp' in low or 'mpesa ref' in low: d=amt
+                            else: w=amt
+                        else:
+                            w=clean_amount(remaining[0]); d=clean_amount(remaining[1])
+                        if w!=0 or d!=0:
+                            data.append([tran_date, clean_details(narrative) if narrative else clean_details(line), d, w, categorize_bank(narrative), "BANK"])
+                            i=j-1
+                    i+=1
 
     df=pd.DataFrame(data, columns=['Date','Details','Paid In','Withdrawn','Category','Source'])
     df['Date']=pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
-    df=df.drop_duplicates()
+    df=df.drop_duplicates(subset=['Date','Details','Paid In','Withdrawn'])
     return df
 
 if uploaded_file:
@@ -178,7 +213,8 @@ if uploaded_file:
         try:
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                 txt=""
-                for p in pdf.pages[:2]: txt+= (p.extract_text() or "") + "\n---PAGE---\n"
+                for p in pdf.pages[:2]: 
+                    txt+= (p.extract_text() or "") + "\n---PAGE---\n"
                 st.code(txt[:4000])
         except: pass
         st.stop()
@@ -189,7 +225,7 @@ if uploaded_file:
     col1,col2,col3=st.columns(3)
     col1.metric("💰 Money In", f"KES {df['Paid In'].sum():,.2f}")
     col2.metric("💸 Money Out", f"KES {df['Withdrawn'].sum():,.2f}")
-    col3.metric("📊 Total", f"KES {df['Paid In'].sum()+df['Withdrawn'].sum():,.2f}")
+    col3.metric("📊 Net Flow", f"KES {(df['Paid In'].sum()-df['Withdrawn'].sum()):,.2f}")
     st.subheader("📊 Category Summary")
     st.dataframe(df.groupby('Category')[['Paid In','Withdrawn']].sum().reset_index(), use_container_width=True, hide_index=True)
     st.subheader("📑 All Transactions")
@@ -207,4 +243,4 @@ if uploaded_file:
     st.dataframe(df_f.iloc[(p-1)*rows:p*rows], use_container_width=True, hide_index=True)
     st.download_button("⬇️ Download CSV", df_f.to_csv(index=False).encode(), "filtered.csv", "text/csv")
 else:
-    st.info(f"👆 Upload your {statement_mode} statement")
+    st.info(f"👆 Upload your {statement_mode} statement - Now supports all formats")
